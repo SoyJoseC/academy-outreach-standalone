@@ -18,6 +18,14 @@ class OutreachTests(unittest.TestCase):
     def test_invalid_phone_returns_none(self):
         self.assertIsNone(outreach.normalize_phone("not-a-phone", "VC"))
 
+    def test_batch_mode_is_the_default(self):
+        args = outreach.parse_args([
+            "--campaign", "test",
+            "--academy-name", "Test Academy",
+        ])
+        self.assertFalse(args.confirm_each)
+        self.assertFalse(args.close_tab)
+
     def test_dry_run_logs_but_never_sends(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
