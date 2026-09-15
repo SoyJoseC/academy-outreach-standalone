@@ -1,4 +1,4 @@
-first_name,phone,programme,whatsapp_consent,opt_out
-John,+17844561111,Information Technology,yes,no
-Maria,+17844562222,Business Administration,yes,no
-Peter,+17844563333,Nursing,no,no
+first_name,phone,country,programme,whatsapp_consent,opt_out
+John,3001234567,Colombia,Information Technology,yes,no
+Maria,83123456,Costa Rica,Business Administration,yes,no
+Peter,5512345678,México,Nursing,no,no

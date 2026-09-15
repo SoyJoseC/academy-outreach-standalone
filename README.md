@@ -1,9 +1,9 @@
 # Standalone Academy Outreach MVP
 
 This repository contains a one-file alternative to the Django/OpenClaw application.
-It reads prospective students from CSV, validates and deduplicates phone numbers,
-applies consent and do-not-contact rules, creates a templated admissions message,
-optionally sends it through controlled WhatsApp Web browser automation, and logs
+It prepares prospective-student data, validates and deduplicates phone numbers,
+applies consent and do-not-contact rules, rotates a user-written message bank,
+optionally sends through controlled WhatsApp Web browser automation, and logs
 every outcome.
 
 The script is a desktop MVP. It uses the same graphical-browser approach as
@@ -16,7 +16,7 @@ contacts who consented to the relevant outreach and honour all opt-out requests.
 ## Requirements
 
 - Python 3.11 or newer
-- Chrome or another browser supported by PyWhatKit
+- Chrome, Edge, Firefox, Brave, or Opera configured as the default browser
 - WhatsApp Web already linked and signed in
 - A desktop session that remains unlocked while the script runs
 
@@ -39,32 +39,80 @@ Edit `prospects.csv` with real, consented contacts. The required columns are:
 | Column | Meaning |
 |---|---|
 | `first_name` | Name used in the message |
-| `phone` | International/E.164 preferred, such as `+1784...` |
+| `phone` | International or national-format number |
+| `country` | Country name or ISO code used when the calling code is missing |
 | `programme` | Programme of interest |
 | `whatsapp_consent` | `yes` only when WhatsApp outreach was authorized |
 | `opt_out` | `yes` prevents contact |
 
 Put one blocked phone number per line in `do_not_contact.csv`. The header is
-`phone`. Local numbers are interpreted as Saint Vincent and the Grenadines
-(`VC`) unless `--default-region` is changed.
+`phone`. Block-list numbers should use complete international format.
 
-## 1. Preview without sending
+## 1. Prepare and review the dataset
 
-Dry-run is the default and does not import PyWhatKit or open a browser:
+Never send directly from an uncleaned export. Copy the example and place the
+raw data in `prospects.csv`, then run:
 
 ```powershell
-python outreach.py --campaign "2027-intake-test" --academy-name "Your Academy"
+python outreach.py --prepare --input prospects.csv
+```
+
+Preparation never opens a browser or sends a message. It creates:
+
+- `cleaned_prospects.csv`: eligible, deduplicated contacts with E.164 numbers.
+- `review_queue.csv`: invalid, ambiguous, duplicate, opted-out, no-consent, and
+  do-not-contact rows with a reason.
+
+Spanish country names and accents are supported. The primary mappings include
+Colombia (`CO`), Costa Rica (`CR`), Mexico (`MX`), and Chile (`CL`), plus the
+other Spanish-speaking Latin American countries. International numbers are
+cross-checked against the stated country; the program does not guess when they
+disagree.
+
+Validation confirms that a number fits a numbering plan. It cannot confirm that
+the number is currently assigned or registered with WhatsApp.
+
+## 2. Configure the message bank
+
+Copy `messages.example.json` to `messages.json` and replace the example with at
+least ten objects. Messages are authored by the operator; the program does not
+invent academy claims. The supported placeholders are `{first_name}`,
+`{programme}`, and `{academy_name}`.
+
+```json
+{
+  "messages": [
+    {"id": "admissions_01", "text": "YOUR FIRST MESSAGE"},
+    {"id": "admissions_02", "text": "YOUR SECOND MESSAGE"}
+  ]
+}
+```
+
+The file must contain at least ten unique IDs. Set `opt_out_text` once at the top
+of the file in the language used by the campaign. The program shuffles the bank,
+uses every message once per cycle, reshuffles, appends that standard opt-out
+line, and records the selected ID in `outreach_log.csv`.
+
+## 3. Preview without sending
+
+Dry-run is the default and does not load the desktop automation libraries or
+open a browser:
+
+```powershell
+python outreach.py --input cleaned_prospects.csv --messages messages.json --campaign "2027-intake-test" --academy-name "Your Academy"
 ```
 
 Review the terminal output and `outreach_log.csv`. Incomplete eligible records
 are also written to `review_queue.csv` instead of being sent.
 
-## 2. Send a controlled test
+The preview prints and records the randomly selected delay for each contact.
+
+## 4. Send a controlled test
 
 Start with your own number and a limit of one:
 
 ```powershell
-python outreach.py --campaign "2027-intake-test" --academy-name "Your Academy" --send --max-messages 1 --confirm-each
+python outreach.py --input cleaned_prospects.csv --messages messages.json --campaign "2027-intake-test" --academy-name "Your Academy" --send --max-messages 1 --confirm-each
 ```
 
 The script asks you to type `SEND`, then asks before processing each message.
@@ -72,7 +120,7 @@ After confirming the browser workflow works, you may omit `--confirm-each` and
 choose an appropriate limit and delay:
 
 ```powershell
-python outreach.py --campaign "2027-intake" --academy-name "Your Academy" --send --max-messages 10 --delay 90
+python outreach.py --input cleaned_prospects.csv --messages messages.json --campaign "2027-intake" --academy-name "Your Academy" --send --max-messages 10 --min-delay 45 --max-delay 90
 ```
 
 `--yes` suppresses the one-time `SEND` prompt and should be used only when you
@@ -85,10 +133,12 @@ rate control; it does not make unsolicited or bulk messaging compliant.
 - Requires affirmative `whatsapp_consent`.
 - Skips opt-outs and numbers in `do_not_contact.csv`.
 - Normalizes and validates phone numbers using `phonenumbers`.
+- Corrects missing calling codes using a known country.
 - Skips duplicates in the current CSV.
 - Skips numbers already marked `send_requested` for the same campaign.
 - Sends incomplete records to `review_queue.csv`.
 - Enforces a per-run message limit and inter-message delay.
+- Uses each message-bank entry once before reshuffling the bank.
 - Records skipped, dry-run, failed, and requested-send results.
 
 Use a new unique `--campaign` value for a genuinely different campaign. Reusing
@@ -98,13 +148,18 @@ successful automation request.
 ## Useful options
 
 ```text
+--prepare                Clean the dataset and exit without sending
 --input PATH             Input CSV (default: prospects.csv)
+--cleaned-output PATH    Prepared eligible CSV (default: cleaned_prospects.csv)
+--messages PATH          JSON bank containing at least 10 messages
 --log PATH               Audit CSV (default: outreach_log.csv)
 --review PATH            Human-review CSV (default: review_queue.csv)
 --do-not-contact PATH     Block-list CSV (default: do_not_contact.csv)
---default-region CODE     Region for local phone numbers (default: VC)
+--default-region CODE     Fallback region for the do-not-contact list (default: VC)
 --max-messages NUMBER     Maximum real send requests per run (default: 10)
---delay SECONDS           Wait between real send requests (default: 60)
+--min-delay SECONDS       Minimum random delay (default: 45)
+--max-delay SECONDS       Maximum random delay (default: 90)
+--delay SECONDS           Optional fixed-delay compatibility override
 --confirm-each            Require approval for each eligible message
 --send                    Enable real browser automation
 --yes                     Skip the one-time SEND confirmation

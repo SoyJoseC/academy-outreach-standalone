@@ -1,4 +1,5 @@
 import csv
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +18,75 @@ class OutreachTests(unittest.TestCase):
 
     def test_invalid_phone_returns_none(self):
         self.assertIsNone(outreach.normalize_phone("not-a-phone", "VC"))
+
+    def test_resolves_spanish_country_names_and_accents(self):
+        self.assertEqual(outreach.resolve_country_region("México"), "MX")
+        self.assertEqual(outreach.resolve_country_region("República Dominicana"), "DO")
+
+    def test_adds_country_calling_codes_to_primary_markets(self):
+        cases = [
+            ("3001234567", "Colombia", "+573001234567"),
+            ("83123456", "Costa Rica", "+50683123456"),
+            ("5512345678", "México", "+525512345678"),
+            ("987654321", "Chile", "+56987654321"),
+        ]
+        for raw, country, expected in cases:
+            with self.subTest(country=country):
+                normalized, status, reason, _ = outreach.normalize_phone_from_country(
+                    raw, country
+                )
+                self.assertEqual(normalized, expected)
+                self.assertEqual(status, "corrected_from_country")
+                self.assertEqual(reason, "")
+
+    def test_country_mismatch_requires_review(self):
+        normalized, status, _, detected = outreach.normalize_phone_from_country(
+            "+573001234567", "México"
+        )
+        self.assertIsNone(normalized)
+        self.assertEqual(status, "country_mismatch")
+        self.assertEqual(detected, "CO")
+
+    def test_message_bank_uses_every_message_before_repeating(self):
+        messages = [
+            {"id": f"message_{number}", "text": "Hello {first_name}"}
+            for number in range(10)
+        ]
+        bank = outreach.MessageBank(messages)
+        prospect = outreach.Prospect(2, "Jose", "+573001234567", "IT", True, False)
+        selected = [bank.next(prospect, "Academy")[0] for _ in range(10)]
+        self.assertEqual(len(set(selected)), 10)
+
+    def test_message_bank_requires_ten_messages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "messages.json"
+            path.write_text(json.dumps({"messages": [{"id": "one", "text": "Hi"}]}))
+            with self.assertRaisesRegex(ValueError, "at least 10"):
+                outreach.load_message_bank(path)
+
+    def test_prepare_separates_clean_and_review_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "raw.csv"
+            clean = root / "clean.csv"
+            review = root / "review.csv"
+            source.write_text(
+                "first_name,phone,country,programme,whatsapp_consent,opt_out\n"
+                "Ana,3001234567,Colombia,Computing,yes,no\n"
+                "Luis,3001234567,Colombia,Business,yes,no\n"
+                "Eva,not-a-phone,Chile,Nursing,yes,no\n",
+                encoding="utf-8",
+            )
+            counts = outreach.prepare_dataset(
+                source, clean, review, root / "dnc.csv", "VC"
+            )
+            with clean.open(newline="", encoding="utf-8") as handle:
+                clean_rows = list(csv.DictReader(handle))
+            with review.open(newline="", encoding="utf-8") as handle:
+                review_rows = list(csv.DictReader(handle))
+            self.assertEqual(clean_rows[0]["phone"], "+573001234567")
+            self.assertEqual({row["validation_status"] for row in review_rows}, {"duplicate", "invalid_number"})
+            self.assertEqual(counts["corrected_from_country"], 1)
 
     def test_dry_run_logs_but_never_sends(self):
         with tempfile.TemporaryDirectory() as directory:

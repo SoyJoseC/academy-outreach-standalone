@@ -1,0 +1,9 @@
+{
+  "opt_out_text": "REPLACE WITH YOUR STANDARD OPT-OUT SENTENCE",
+  "messages": [
+    {
+      "id": "admissions_01",
+      "text": "REPLACE THIS WITH YOUR FIRST TEMPLATE USING OPTIONAL PLACEHOLDERS SUCH AS {first_name}, {programme}, AND {academy_name}"
+    }
+  ]
+}
