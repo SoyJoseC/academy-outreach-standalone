@@ -75,10 +75,6 @@ choose an appropriate limit and delay:
 python outreach.py --campaign "2027-intake" --academy-name "Your Academy" --send --max-messages 10 --delay 90
 ```
 
-In batch mode, `SEND` authorizes the run once. The script then reuses the open
-WhatsApp Web tab for each eligible recipient and leaves it open when finished.
-Add `--close-tab` only if you intentionally want the tab closed after each send.
-
 `--yes` suppresses the one-time `SEND` prompt and should be used only when you
 have intentionally prepared and reviewed the input. A delay is an operational
 rate control; it does not make unsolicited or bulk messaging compliant.
@@ -112,7 +108,6 @@ successful automation request.
 --confirm-each            Require approval for each eligible message
 --send                    Enable real browser automation
 --yes                     Skip the one-time SEND confirmation
---close-tab               Close the WhatsApp tab after every send
 ```
 
 ## Limitations

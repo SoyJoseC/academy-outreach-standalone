@@ -126,13 +126,7 @@ def add_to_review(path: Path, campaign: str, prospect: Prospect, reason: str) ->
     })
 
 
-def send_whatsapp(
-    phone: str,
-    message: str,
-    wait_time: int,
-    close_time: int,
-    close_tab: bool = False,
-) -> None:
+def send_whatsapp(phone: str, message: str, wait_time: int, close_time: int) -> None:
     """Open, focus, and submit a pre-filled WhatsApp Web message on Windows.
 
     PyWhatKit's instant sender can lose browser focus before its final Enter
@@ -142,44 +136,35 @@ def send_whatsapp(
     import pyautogui
     import pygetwindow
 
-    def whatsapp_browser_window():
-        browser_words = ("chrome", "edge", "firefox", "brave", "opera")
-        return next(
-            (
-                window
-                for window in pygetwindow.getAllWindows()
-                if "whatsapp" in (window.title or "").lower()
-                and any(word in window.title.lower() for word in browser_words)
-            ),
-            None,
-        )
-
     recipient = phone.lstrip("+")
     url = (
         f"https://web.whatsapp.com/send?phone={quote(recipient)}"
         f"&text={quote(message)}"
     )
-
-    window = whatsapp_browser_window()
-    if window is not None:
-        if window.isMinimized:
-            window.restore()
-        window.activate()
-        time.sleep(1)
-        pyautogui.hotkey("ctrl", "l")
-        pyautogui.write(url, interval=0.001)
-        pyautogui.press("enter")
-    elif not webbrowser.open(url, new=0):
+    if not webbrowser.open(url, new=2):
         raise RuntimeError("The default browser could not be opened.")
 
     time.sleep(wait_time)
-    window = whatsapp_browser_window()
-    if window is None:
+    candidates = [
+        window
+        for window in pygetwindow.getAllWindows()
+        if "whatsapp" in (window.title or "").lower()
+    ]
+    if not candidates:
         raise RuntimeError(
             "WhatsApp Web opened, but its browser window could not be found. "
             "Keep the browser visible and make it your default browser."
         )
 
+    browser_words = ("chrome", "edge", "firefox", "brave", "opera")
+    window = next(
+        (
+            item
+            for item in candidates
+            if any(word in item.title.lower() for word in browser_words)
+        ),
+        candidates[0],
+    )
     if window.isMinimized:
         window.restore()
     window.activate()
@@ -191,9 +176,8 @@ def send_whatsapp(
     pyautogui.click(click_x, click_y)
     time.sleep(1)
     pyautogui.press("enter")
-    if close_tab:
-        time.sleep(max(close_time, 2))
-        pyautogui.hotkey("ctrl", "w")
+    time.sleep(max(close_time, 2))
+    pyautogui.hotkey("ctrl", "w")
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -209,11 +193,6 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--delay", type=int, default=60)
     parser.add_argument("--wait-time", type=int, default=20)
     parser.add_argument("--close-time", type=int, default=3)
-    parser.add_argument(
-        "--close-tab",
-        action="store_true",
-        help="Close WhatsApp's browser tab after each send (off by default)",
-    )
     parser.add_argument("--confirm-each", action="store_true")
     parser.add_argument("--send", action="store_true", help="Enable real WhatsApp Web automation")
     parser.add_argument("--yes", action="store_true", help="Skip the one-time SEND confirmation")
@@ -295,13 +274,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             log_result(args.log, args.campaign, prospect, "dry_run", message)
             continue
         try:
-            send_whatsapp(
-                phone,
-                message,
-                args.wait_time,
-                args.close_time,
-                args.close_tab,
-            )
+            send_whatsapp(phone, message, args.wait_time, args.close_time)
             sent_count += 1
             # Browser automation can confirm only that sending was requested.
             log_result(args.log, args.campaign, prospect, "send_requested", message)
