@@ -11,10 +11,12 @@ import argparse
 import csv
 import sys
 import time
+import webbrowser
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import quote
 
 import phonenumbers
 
@@ -125,11 +127,57 @@ def add_to_review(path: Path, campaign: str, prospect: Prospect, reason: str) ->
 
 
 def send_whatsapp(phone: str, message: str, wait_time: int, close_time: int) -> None:
-    import pywhatkit  # Imported only when real sending is explicitly enabled.
+    """Open, focus, and submit a pre-filled WhatsApp Web message on Windows.
 
-    pywhatkit.sendwhatmsg_instantly(
-        phone, message, wait_time=wait_time, tab_close=True, close_time=close_time
+    PyWhatKit's instant sender can lose browser focus before its final Enter
+    keypress. This small adapter uses the same browser-automation approach but
+    explicitly finds the WhatsApp browser window before submitting.
+    """
+    import pyautogui
+    import pygetwindow
+
+    recipient = phone.lstrip("+")
+    url = (
+        f"https://web.whatsapp.com/send?phone={quote(recipient)}"
+        f"&text={quote(message)}"
     )
+    if not webbrowser.open(url, new=2):
+        raise RuntimeError("The default browser could not be opened.")
+
+    time.sleep(wait_time)
+    candidates = [
+        window
+        for window in pygetwindow.getAllWindows()
+        if "whatsapp" in (window.title or "").lower()
+    ]
+    if not candidates:
+        raise RuntimeError(
+            "WhatsApp Web opened, but its browser window could not be found. "
+            "Keep the browser visible and make it your default browser."
+        )
+
+    browser_words = ("chrome", "edge", "firefox", "brave", "opera")
+    window = next(
+        (
+            item
+            for item in candidates
+            if any(word in item.title.lower() for word in browser_words)
+        ),
+        candidates[0],
+    )
+    if window.isMinimized:
+        window.restore()
+    window.activate()
+    time.sleep(2)
+
+    # WhatsApp's composer is near the bottom-centre of the active chat pane.
+    click_x = window.left + (window.width // 2)
+    click_y = window.top + window.height - 65
+    pyautogui.click(click_x, click_y)
+    time.sleep(1)
+    pyautogui.press("enter")
+    time.sleep(max(close_time, 2))
+    pyautogui.hotkey("ctrl", "w")
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:

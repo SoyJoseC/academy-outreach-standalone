@@ -3,13 +3,15 @@
 This repository contains a one-file alternative to the Django/OpenClaw application.
 It reads prospective students from CSV, validates and deduplicates phone numbers,
 applies consent and do-not-contact rules, creates a templated admissions message,
-optionally sends it through WhatsApp Web with PyWhatKit, and logs every outcome.
+optionally sends it through controlled WhatsApp Web browser automation, and logs
+every outcome.
 
-The script is a desktop MVP. PyWhatKit controls WhatsApp Web in a graphical
-browser; it is not the official WhatsApp Business API and cannot prove that a
-recipient received a message. The log therefore uses `send_requested`, not
-`delivered`. Use only with contacts who consented to the relevant outreach and
-honour all opt-out requests.
+The script is a desktop MVP. It uses the same graphical-browser approach as
+PyWhatKit, with an explicit Windows focus step to avoid the common situation in
+which the message is prepared but Enter is sent to the wrong window. This is not
+the official WhatsApp Business API and cannot prove that a recipient received a
+message. The log therefore uses `send_requested`, not `delivered`. Use only with
+contacts who consented to the relevant outreach and honour all opt-out requests.
 
 ## Requirements
 
@@ -114,6 +116,7 @@ successful automation request.
 - No reliable delivery/read receipts.
 - WhatsApp Web UI changes can break browser automation.
 - The machine must remain signed in and attended.
+- The current focus controller is intended for Windows desktop use.
 - CSV files are not a multi-user database and should be access-controlled.
 - Replace this with an approved business messaging integration before
   unattended or larger-scale production use.
