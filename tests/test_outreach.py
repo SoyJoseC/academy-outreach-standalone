@@ -2,6 +2,8 @@ import csv
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -159,6 +161,52 @@ class OutreachTests(unittest.TestCase):
             with log_path.open(newline="", encoding="utf-8") as handle:
                 rows = list(csv.DictReader(handle))
             self.assertEqual(rows[0]["status"], "dry_run")
+
+    def test_campaign_progress_counts_only_unique_eligible_contacts(self):
+        rows = [
+            {"first_name": "Ana", "phone": "+573001234567", "opt_out": "no"},
+            {"first_name": "Ana duplicate", "phone": "+57 300 123 4567", "opt_out": "no"},
+            {"first_name": "Luis", "phone": "+50683123456", "opt_out": "yes"},
+            {"first_name": "Eva", "phone": "+525512345678", "opt_out": "no"},
+            {"first_name": "", "phone": "+56987654321", "opt_out": "no"},
+        ]
+        eligible = outreach.eligible_phone_numbers(
+            rows, {"+525512345678"}, "VC"
+        )
+        self.assertEqual(eligible, {"+573001234567"})
+        self.assertEqual(
+            outreach.campaign_progress(eligible, {"+573001234567"}),
+            (1, 1, 0, 100.0),
+        )
+
+    def test_progress_continues_across_real_send_batches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_path = root / "prospects.csv"
+            log_path = root / "log.csv"
+            input_path.write_text(
+                "first_name,phone,opt_out\n"
+                "Ana,+573001234567,no\n"
+                "Luis,+50683123456,no\n"
+                "Eva,+525512345678,no\n",
+                encoding="utf-8",
+            )
+            common_args = [
+                "--input", str(input_path),
+                "--log", str(log_path),
+                "--review", str(root / "review.csv"),
+                "--do-not-contact", str(root / "dnc.csv"),
+                "--campaign", "progress-test",
+                "--academy-name", "Test Academy",
+                "--send", "--yes", "--delay", "0",
+            ]
+            with patch.object(outreach, "send_whatsapp"), redirect_stdout(StringIO()) as first:
+                self.assertEqual(outreach.main(common_args + ["--max-messages", "2"]), 0)
+            self.assertIn("Campaign progress: 2/3 reached", first.getvalue())
+
+            with patch.object(outreach, "send_whatsapp"), redirect_stdout(StringIO()) as second:
+                self.assertEqual(outreach.main(common_args + ["--max-messages", "2"]), 0)
+            self.assertIn("Campaign progress: 3/3 reached", second.getvalue())
 
 
 if __name__ == "__main__":

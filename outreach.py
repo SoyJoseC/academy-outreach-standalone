@@ -372,6 +372,50 @@ def load_previous_sends(path: Path, campaign: str) -> set[str]:
         }
 
 
+def eligible_phone_numbers(
+    rows: list[dict[str, str]], blocked: set[str], default_region: str
+) -> set[str]:
+    """Return unique contacts that are eligible for campaign progress."""
+    eligible: set[str] = set()
+    for row in rows:
+        phone = normalize_phone((row.get("phone") or "").strip(), default_region)
+        consent_denied = (
+            "whatsapp_consent" in row and not is_truthy(row.get("whatsapp_consent"))
+        )
+        if (
+            phone
+            and phone not in blocked
+            and not is_truthy(row.get("opt_out"))
+            and not consent_denied
+            and (row.get("first_name") or "").strip()
+        ):
+            eligible.add(phone)
+    return eligible
+
+
+def campaign_progress(
+    eligible: set[str], previously_sent: set[str], sent_this_run: int = 0
+) -> tuple[int, int, int, float]:
+    """Return reached, total, remaining, and percentage for one campaign."""
+    total = len(eligible)
+    reached = min(len(eligible & previously_sent) + sent_this_run, total)
+    remaining = total - reached
+    percentage = (reached / total * 100) if total else 0.0
+    return reached, total, remaining, percentage
+
+
+def print_campaign_progress(
+    eligible: set[str], previously_sent: set[str], sent_this_run: int = 0
+) -> None:
+    reached, total, remaining, percentage = campaign_progress(
+        eligible, previously_sent, sent_this_run
+    )
+    print(
+        f"Campaign progress: {reached}/{total} reached "
+        f"({percentage:.1f}%) — {remaining} remaining"
+    )
+
+
 def append_row(path: Path, columns: list[str], row: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     exists = path.exists() and path.stat().st_size > 0
@@ -547,15 +591,16 @@ def main(argv: Iterable[str] | None = None) -> int:
     if missing:
         print(f"Missing required CSV columns: {', '.join(missing)}", file=sys.stderr)
         return 2
+    print(f"Academy Outreach — {'REAL SEND' if args.send else 'DRY RUN'} — campaign: {args.campaign}")
+    blocked = load_do_not_contact(args.do_not_contact, args.default_region)
+    previously_sent = load_previous_sends(args.log, args.campaign)
+    eligible_phones = eligible_phone_numbers(rows, blocked, args.default_region)
+    print_campaign_progress(eligible_phones, previously_sent)
     if args.send and not args.yes:
         confirmation = input(f"REAL SEND is enabled (limit {args.max_messages}). Type SEND to continue: ")
         if confirmation != "SEND":
             print("Cancelled; no messages were sent.")
             return 1
-
-    print(f"Academy Outreach — {'REAL SEND' if args.send else 'DRY RUN'} — campaign: {args.campaign}")
-    blocked = load_do_not_contact(args.do_not_contact, args.default_region)
-    previously_sent = load_previous_sends(args.log, args.campaign)
     try:
         message_bank = load_message_bank(args.messages) if args.messages else None
     except (ValueError, OSError, json.JSONDecodeError) as exc:
@@ -642,6 +687,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 args.log, args.campaign, prospect, "send_requested", message,
                 template_id=template_id, delay_seconds=planned_delay,
             )
+            print_campaign_progress(eligible_phones, previously_sent, sent_count)
         except Exception as exc:
             log_result(
                 args.log, args.campaign, prospect, "failed", message, str(exc),
@@ -652,6 +698,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             time.sleep(planned_delay)
 
     print(f"\nFinished. Real send requests this run: {sent_count}. Log: {args.log}")
+    print_campaign_progress(eligible_phones, previously_sent, sent_count)
     return 0
 
 

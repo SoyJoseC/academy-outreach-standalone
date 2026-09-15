@@ -145,6 +145,8 @@ rate control; it does not make unsolicited or bulk messaging compliant.
 - Corrects missing calling codes using a known country.
 - Skips duplicates in the current CSV.
 - Skips numbers already marked `send_requested` for the same campaign.
+- Shows campaign progress across batches, for example
+  `Campaign progress: 40/420 reached (9.5%) — 380 remaining`.
 - Sends incomplete records to `review_queue.csv`.
 - Enforces a per-run message limit and inter-message delay.
 - Uses each message-bank entry once before reshuffling the bank.
@@ -153,6 +155,12 @@ rate control; it does not make unsolicited or bulk messaging compliant.
 Use a new unique `--campaign` value for a genuinely different campaign. Reusing
 the same name intentionally prevents the same number being sent twice after a
 successful automation request.
+
+The progress total counts unique contacts in the current input that are eligible
+to receive a message. The reached count includes only numbers recorded as
+`send_requested` for that campaign. Keep the same campaign name, log file, and
+input list across batches so the counter remains consistent. Dry runs and failed
+attempts do not increase the reached count.
 
 ## Useful options
 
