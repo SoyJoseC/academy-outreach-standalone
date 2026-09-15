@@ -88,6 +88,53 @@ class OutreachTests(unittest.TestCase):
             self.assertEqual({row["validation_status"] for row in review_rows}, {"duplicate", "invalid_number"})
             self.assertEqual(counts["corrected_from_country"], 1)
 
+    def test_prepare_accepts_actual_contact_columns_without_consent_or_programme(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "raw.csv"
+            clean = root / "clean.csv"
+            review = root / "review.csv"
+            source.write_text(
+                "first name,last name,phone,country,sign up comment\n"
+                "Ana,Lopez,3001234567,Colombia,Requested information\n",
+                encoding="utf-8",
+            )
+            result = outreach.prepare_dataset(
+                source, clean, review, root / "dnc.csv", "VC"
+            )
+            with clean.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(result["corrected_from_country"], 1)
+            self.assertEqual(rows[0]["first_name"], "Ana")
+            self.assertEqual(rows[0]["last_name"], "Lopez")
+            self.assertEqual(rows[0]["sign_up_comment"], "Requested information")
+
+    def test_cleaned_contact_without_programme_can_be_previewed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_path = root / "cleaned.csv"
+            log_path = root / "log.csv"
+            input_path.write_text(
+                "first_name,last_name,phone,country,sign_up_comment,opt_out\n"
+                "Ana,Lopez,+573001234567,Colombia,Requested information,no\n",
+                encoding="utf-8",
+            )
+            with patch.object(outreach, "send_whatsapp") as sender:
+                result = outreach.main([
+                    "--input", str(input_path),
+                    "--log", str(log_path),
+                    "--review", str(root / "review.csv"),
+                    "--do-not-contact", str(root / "dnc.csv"),
+                    "--campaign", "first-contact",
+                    "--academy-name", "Test Academy",
+                ])
+            self.assertEqual(result, 0)
+            sender.assert_not_called()
+            with log_path.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(rows[0]["status"], "dry_run")
+            self.assertNotIn("interest in .", rows[0]["message"])
+
     def test_dry_run_logs_but_never_sends(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

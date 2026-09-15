@@ -3,7 +3,7 @@
   "messages": [
     {
       "id": "admissions_01",
-      "text": "REPLACE THIS WITH YOUR FIRST TEMPLATE USING OPTIONAL PLACEHOLDERS SUCH AS {first_name}, {programme}, AND {academy_name}"
+      "text": "REPLACE THIS WITH YOUR FIRST TEMPLATE USING OPTIONAL PLACEHOLDERS SUCH AS {first_name}, {last_name}, {sign_up_comment}, AND {academy_name}"
     }
   ]
 }

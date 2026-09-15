@@ -1,4 +1,4 @@
-first_name,phone,country,programme,whatsapp_consent,opt_out
-John,3001234567,Colombia,Information Technology,yes,no
-Maria,83123456,Costa Rica,Business Administration,yes,no
-Peter,5512345678,México,Nursing,no,no
+first name,last name,phone,country,sign up comment
+John,Example,3001234567,Colombia,Requested admissions information
+Maria,Example,83123456,Costa Rica,Asked to be contacted
+Peter,Example,5512345678,México,Interested in learning more

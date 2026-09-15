@@ -28,7 +28,7 @@ import phonenumbers
 import pycountry
 
 TRUTHY = {"1", "true", "yes", "y"}
-REQUIRED_COLUMNS = {"first_name", "phone", "programme", "whatsapp_consent", "opt_out"}
+REQUIRED_COLUMNS = {"first_name", "phone"}
 PREPARE_REQUIRED_COLUMNS = REQUIRED_COLUMNS | {"country"}
 LOG_COLUMNS = [
     "timestamp_utc", "campaign", "row_number", "first_name", "phone",
@@ -36,11 +36,29 @@ LOG_COLUMNS = [
 ]
 REVIEW_COLUMNS = ["campaign", "row_number", "first_name", "phone", "programme", "reason"]
 PREPARED_COLUMNS = [
-    "first_name", "phone", "country", "programme", "whatsapp_consent",
+    "first_name", "last_name", "phone", "country", "sign_up_comment",
     "opt_out", "original_phone", "validation_status", "detected_region",
 ]
 PREPARATION_REVIEW_COLUMNS = PREPARED_COLUMNS + ["validation_reason"]
-ALLOWED_TEMPLATE_FIELDS = {"first_name", "programme", "academy_name"}
+ALLOWED_TEMPLATE_FIELDS = {
+    "first_name", "last_name", "programme", "sign_up_comment", "academy_name"
+}
+COLUMN_ALIASES = {
+    "first name": "first_name",
+    "firstname": "first_name",
+    "last name": "last_name",
+    "lastname": "last_name",
+    "phone number": "phone",
+    "mobile": "phone",
+    "mobile number": "phone",
+    "program": "programme",
+    "course": "programme",
+    "sign up comment": "sign_up_comment",
+    "signup comment": "sign_up_comment",
+    "comments": "sign_up_comment",
+    "whatsapp consent": "whatsapp_consent",
+    "opt out": "opt_out",
+}
 OPT_OUT_TEXT = "Reply STOP if you do not want further WhatsApp messages."
 COUNTRY_ALIASES = {
     # Primary admissions markets
@@ -89,6 +107,8 @@ class Prospect:
     programme: str
     whatsapp_consent: bool
     opted_out: bool
+    last_name: str = ""
+    sign_up_comment: str = ""
 
 
 class MessageBank:
@@ -109,7 +129,9 @@ class MessageBank:
         template = self._queue.pop()
         message = template["text"].format(
             first_name=prospect.first_name,
+            last_name=prospect.last_name,
             programme=prospect.programme,
+            sign_up_comment=prospect.sign_up_comment,
             academy_name=academy_name,
         ).strip()
         rendered = f"{message} {self.opt_out_text}" if self.opt_out_text else message
@@ -189,11 +211,15 @@ def normalize_phone_from_country(
 
 
 def generate_message(prospect: Prospect, academy_name: str) -> str:
+    interest = (
+        f" You expressed interest in {prospect.programme}."
+        if prospect.programme
+        else ""
+    )
     return (
-        f"Hello {prospect.first_name}, this is {academy_name}. "
-        f"You expressed interest in {prospect.programme}. "
+        f"Hello {prospect.first_name}, this is {academy_name}.{interest} "
         "Would you like information about the admission requirements and application process? "
-        "Reply STOP if you do not want further WhatsApp messages."
+        f"{OPT_OUT_TEXT}"
     )
 
 
@@ -238,6 +264,13 @@ def read_csv(
 ) -> tuple[list[dict[str, str]], list[str]]:
     with path.open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
+        reader.fieldnames = [
+            COLUMN_ALIASES.get(
+                normalize_country_key(column or "").replace("_", " "),
+                normalize_country_key(column or "").replace(" ", "_"),
+            )
+            for column in (reader.fieldnames or [])
+        ]
         missing = sorted(required_columns - set(reader.fieldnames or []))
         return ([], missing) if missing else (list(reader), [])
 
@@ -273,7 +306,8 @@ def prepare_dataset(
         normalized, status, reason, detected = normalize_phone_from_country(
             original_phone, country
         )
-        consent = is_truthy(row.get("whatsapp_consent"))
+        consent_supplied = "whatsapp_consent" in row
+        consent = is_truthy(row.get("whatsapp_consent")) if consent_supplied else True
         opted_out = is_truthy(row.get("opt_out"))
 
         if normalized and normalized in seen:
@@ -284,17 +318,17 @@ def prepare_dataset(
             status, reason = "do_not_contact", "number appears in the do-not-contact list"
         elif opted_out:
             status, reason = "opted_out", "contact has opted out"
-        elif not consent:
+        elif consent_supplied and not consent:
             status, reason = "no_consent", "WhatsApp consent is not affirmative"
-        elif not (row.get("first_name") or "").strip() or not (row.get("programme") or "").strip():
-            status, reason = "human_review", "first_name or programme is missing"
+        elif not (row.get("first_name") or "").strip():
+            status, reason = "human_review", "first_name is missing"
 
         output = {
             "first_name": (row.get("first_name") or "").strip(),
+            "last_name": (row.get("last_name") or "").strip(),
             "phone": normalized or "",
             "country": country,
-            "programme": (row.get("programme") or "").strip(),
-            "whatsapp_consent": "yes" if consent else "no",
+            "sign_up_comment": (row.get("sign_up_comment") or "").strip(),
             "opt_out": "yes" if opted_out else "no",
             "original_phone": original_phone,
             "validation_status": status,
@@ -539,13 +573,19 @@ def main(argv: Iterable[str] | None = None) -> int:
             first_name=(row.get("first_name") or "").strip(),
             phone=phone or raw_phone,
             programme=(row.get("programme") or "").strip(),
-            whatsapp_consent=is_truthy(row.get("whatsapp_consent")),
+            whatsapp_consent=(
+                is_truthy(row.get("whatsapp_consent"))
+                if "whatsapp_consent" in row
+                else True
+            ),
             opted_out=is_truthy(row.get("opt_out")),
+            last_name=(row.get("last_name") or "").strip(),
+            sign_up_comment=(row.get("sign_up_comment") or "").strip(),
         )
         if prospect.opted_out:
             log_result(args.log, args.campaign, prospect, "skipped_opt_out")
             continue
-        if not prospect.whatsapp_consent:
+        if "whatsapp_consent" in row and not prospect.whatsapp_consent:
             log_result(args.log, args.campaign, prospect, "skipped_no_consent")
             continue
         if not phone:
@@ -562,8 +602,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         if phone in previously_sent:
             log_result(args.log, args.campaign, prospect, "skipped_already_requested")
             continue
-        if not prospect.first_name or not prospect.programme:
-            reason = "missing first_name or programme"
+        if not prospect.first_name:
+            reason = "missing first_name"
             add_to_review(args.review, args.campaign, prospect, reason)
             log_result(args.log, args.campaign, prospect, "human_review", error=reason)
             continue

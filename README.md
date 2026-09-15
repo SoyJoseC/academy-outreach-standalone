@@ -34,16 +34,22 @@ Copy-Item prospects.example.csv prospects.csv
 Copy-Item do_not_contact.example.csv do_not_contact.csv
 ```
 
-Edit `prospects.csv` with real, consented contacts. The required columns are:
+Edit `prospects.csv` with contacts who previously initiated an admissions
+inquiry. The accepted source columns are:
 
 | Column | Meaning |
 |---|---|
 | `first_name` | Name used in the message |
+| `last_name` | Optional family name |
 | `phone` | International or national-format number |
 | `country` | Country name or ISO code used when the calling code is missing |
-| `programme` | Programme of interest |
-| `whatsapp_consent` | `yes` only when WhatsApp outreach was authorized |
-| `opt_out` | `yes` prevents contact |
+| `sign_up_comment` | Optional context from the original inquiry |
+| `opt_out` | Optional; `yes` prevents contact |
+
+Headers containing spaces, including `first name`, `last name`, and
+`sign up comment`, are accepted directly. `programme` and `whatsapp_consent`
+remain optional for compatibility with older files, but are not required. When
+`whatsapp_consent` is present, a negative value is still respected.
 
 Put one blocked phone number per line in `do_not_contact.csv`. The header is
 `phone`. Block-list numbers should use complete international format.
@@ -77,7 +83,9 @@ the number is currently assigned or registered with WhatsApp.
 Copy `messages.example.json` to `messages.json` and replace the example with at
 least ten objects. Messages are authored by the operator; the program does not
 invent academy claims. The supported placeholders are `{first_name}`,
-`{programme}`, and `{academy_name}`.
+`{last_name}`, `{sign_up_comment}`, `{programme}`, and `{academy_name}`. The
+`programme` placeholder is available for older or enriched datasets; an initial
+contact template does not need to use it.
 
 ```json
 {
@@ -130,7 +138,8 @@ rate control; it does not make unsolicited or bulk messaging compliant.
 ## Behaviour and safety controls
 
 - Dry-run unless `--send` is supplied.
-- Requires affirmative `whatsapp_consent`.
+- Treats inclusion in the curated input as an existing inquiry; if the optional
+  `whatsapp_consent` column is present, negative values are respected.
 - Skips opt-outs and numbers in `do_not_contact.csv`.
 - Normalizes and validates phone numbers using `phonenumbers`.
 - Corrects missing calling codes using a known country.
