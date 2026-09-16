@@ -135,6 +135,22 @@ python outreach.py --input cleaned_prospects.csv --messages messages.json --camp
 have intentionally prepared and reviewed the input. A delay is an operational
 rate control; it does not make unsolicited or bulk messaging compliant.
 
+To receive an ntfy notification when a real-send batch finishes, add your topic:
+
+```powershell
+python outreach.py --input cleaned_prospects.csv --messages messages.json --campaign "2027-intake" --academy-name "Your Academy" --send --max-messages 30 --ntfy-topic "your-private-topic"
+```
+
+Subscribe to that same topic in the ntfy mobile app. For a protected topic, set
+the token in PowerShell before running the command:
+
+```powershell
+$env:NTFY_TOKEN = "your-access-token"
+```
+
+Self-hosted ntfy users can add `--ntfy-server "https://ntfy.example.com"`.
+Notification failures produce a warning but do not change the batch results.
+
 ## Behaviour and safety controls
 
 - Dry-run unless `--send` is supplied.
@@ -147,6 +163,9 @@ rate control; it does not make unsolicited or bulk messaging compliant.
 - Skips numbers already marked `send_requested` for the same campaign.
 - Shows campaign progress across batches, for example
   `Campaign progress: 40/420 reached (9.5%) — 380 remaining`.
+- Shows current-run progress after every requested send, for example
+  `Run progress: 1/30 contacted this run`.
+- Optionally sends an ntfy notification after a real-send batch finishes.
 - Sends incomplete records to `review_queue.csv`.
 - Enforces a per-run message limit and inter-message delay.
 - Uses each message-bank entry once before reshuffling the bank.
@@ -180,6 +199,9 @@ attempts do not increase the reached count.
 --confirm-each            Require approval for each eligible message
 --send                    Enable real browser automation
 --yes                     Skip the one-time SEND confirmation
+--ntfy-topic TOPIC        Notify this ntfy topic when a real batch finishes
+--ntfy-server URL         ntfy server (default: https://ntfy.sh)
+--ntfy-token TOKEN        Optional access token (prefer NTFY_TOKEN environment variable)
 ```
 
 ## Limitations

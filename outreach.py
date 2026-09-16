@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 import phonenumbers
 import pycountry
@@ -416,6 +417,45 @@ def print_campaign_progress(
     )
 
 
+def print_run_progress(sent_this_run: int, run_target: int) -> None:
+    print(f"Run progress: {sent_this_run}/{run_target} contacted this run")
+
+
+def send_ntfy_notification(
+    server: str,
+    topic: str,
+    campaign: str,
+    sent_this_run: int,
+    run_target: int,
+    reached: int,
+    total: int,
+    remaining: int,
+    token: str = "",
+) -> None:
+    """Publish a batch-completion notification to ntfy."""
+    payload = {
+        "topic": topic,
+        "title": "Academy Outreach batch finished",
+        "message": (
+            f"Campaign {campaign}: {sent_this_run}/{run_target} contacted this run. "
+            f"Overall progress: {reached}/{total} reached; {remaining} remaining."
+        ),
+        "tags": ["white_check_mark"],
+    }
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = Request(
+        server.rstrip("/"),
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    with urlopen(request, timeout=10) as response:
+        if not 200 <= response.status < 300:
+            raise RuntimeError(f"ntfy returned HTTP {response.status}")
+
+
 def append_row(path: Path, columns: list[str], row: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     exists = path.exists() and path.stat().st_size > 0
@@ -549,6 +589,21 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--confirm-each", action="store_true")
     parser.add_argument("--send", action="store_true", help="Enable real WhatsApp Web automation")
     parser.add_argument("--yes", action="store_true", help="Skip the one-time SEND confirmation")
+    parser.add_argument(
+        "--ntfy-topic",
+        default=os.environ.get("NTFY_TOPIC", ""),
+        help="Optional ntfy topic for batch-completion notifications",
+    )
+    parser.add_argument(
+        "--ntfy-server",
+        default=os.environ.get("NTFY_SERVER", "https://ntfy.sh"),
+        help="ntfy server URL (default: https://ntfy.sh)",
+    )
+    parser.add_argument(
+        "--ntfy-token",
+        default=os.environ.get("NTFY_TOKEN", ""),
+        help="Optional ntfy access token; NTFY_TOKEN is preferred",
+    )
     args = parser.parse_args(argv)
     if not args.prepare and (not args.campaign or not args.academy_name):
         parser.error("--campaign and --academy-name are required unless --prepare is used")
@@ -596,6 +651,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     previously_sent = load_previous_sends(args.log, args.campaign)
     eligible_phones = eligible_phone_numbers(rows, blocked, args.default_region)
     print_campaign_progress(eligible_phones, previously_sent)
+    remaining_at_start = len(eligible_phones - previously_sent)
+    run_target = min(args.max_messages, remaining_at_start)
+    if args.send:
+        print_run_progress(0, run_target)
     if args.send and not args.yes:
         confirmation = input(f"REAL SEND is enabled (limit {args.max_messages}). Type SEND to continue: ")
         if confirmation != "SEND":
@@ -688,6 +747,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 template_id=template_id, delay_seconds=planned_delay,
             )
             print_campaign_progress(eligible_phones, previously_sent, sent_count)
+            print_run_progress(sent_count, run_target)
         except Exception as exc:
             log_result(
                 args.log, args.campaign, prospect, "failed", message, str(exc),
@@ -699,6 +759,27 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     print(f"\nFinished. Real send requests this run: {sent_count}. Log: {args.log}")
     print_campaign_progress(eligible_phones, previously_sent, sent_count)
+    if args.send:
+        print_run_progress(sent_count, run_target)
+    if args.send and args.ntfy_topic:
+        reached, total, remaining, _ = campaign_progress(
+            eligible_phones, previously_sent, sent_count
+        )
+        try:
+            send_ntfy_notification(
+                args.ntfy_server,
+                args.ntfy_topic,
+                args.campaign,
+                sent_count,
+                run_target,
+                reached,
+                total,
+                remaining,
+                args.ntfy_token,
+            )
+            print(f"ntfy notification sent to topic: {args.ntfy_topic}")
+        except Exception as exc:
+            print(f"Warning: ntfy notification failed: {exc}", file=sys.stderr)
     return 0
 
 

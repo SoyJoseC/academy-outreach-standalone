@@ -203,10 +203,42 @@ class OutreachTests(unittest.TestCase):
             with patch.object(outreach, "send_whatsapp"), redirect_stdout(StringIO()) as first:
                 self.assertEqual(outreach.main(common_args + ["--max-messages", "2"]), 0)
             self.assertIn("Campaign progress: 2/3 reached", first.getvalue())
+            self.assertIn("Run progress: 2/2 contacted this run", first.getvalue())
 
             with patch.object(outreach, "send_whatsapp"), redirect_stdout(StringIO()) as second:
                 self.assertEqual(outreach.main(common_args + ["--max-messages", "2"]), 0)
             self.assertIn("Campaign progress: 3/3 reached", second.getvalue())
+            self.assertIn("Run progress: 1/1 contacted this run", second.getvalue())
+
+    def test_real_batch_sends_ntfy_completion_notification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_path = root / "prospects.csv"
+            input_path.write_text(
+                "first_name,phone,opt_out\nAna,+573001234567,no\n",
+                encoding="utf-8",
+            )
+            with (
+                patch.object(outreach, "send_whatsapp"),
+                patch.object(outreach, "send_ntfy_notification") as notify,
+                redirect_stdout(StringIO()) as output,
+            ):
+                result = outreach.main([
+                    "--input", str(input_path),
+                    "--log", str(root / "log.csv"),
+                    "--review", str(root / "review.csv"),
+                    "--do-not-contact", str(root / "dnc.csv"),
+                    "--campaign", "ntfy-test",
+                    "--academy-name", "Test Academy",
+                    "--send", "--yes", "--max-messages", "30",
+                    "--delay", "0", "--ntfy-topic", "academy-test",
+                ])
+            self.assertEqual(result, 0)
+            notify.assert_called_once_with(
+                "https://ntfy.sh", "academy-test", "ntfy-test",
+                1, 1, 1, 1, 0, "",
+            )
+            self.assertIn("Run progress: 1/1 contacted this run", output.getvalue())
 
 
 if __name__ == "__main__":
