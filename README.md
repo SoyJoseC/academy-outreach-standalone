@@ -44,10 +44,11 @@ inquiry. The accepted source columns are:
 | `phone` | International or national-format number |
 | `country` | Country name or ISO code used when the calling code is missing |
 | `sign_up_comment` | Optional context from the original inquiry |
+| `date created` | Optional inquiry timestamp (CRM `Date Created`) |
 | `opt_out` | Optional; `yes` prevents contact |
 
-Headers containing spaces, including `first name`, `last name`, and
-`sign up comment`, are accepted directly. `programme` and `whatsapp_consent`
+Headers containing spaces, including `first name`, `last name`, `sign up comment`,
+and `date created`, are accepted directly. `programme` and `whatsapp_consent`
 remain optional for compatibility with older files, but are not required. When
 `whatsapp_consent` is present, a negative value is still respected.
 
@@ -56,18 +57,33 @@ Put one blocked phone number per line in `do_not_contact.csv`. The header is
 
 ## 1. Prepare and review the dataset
 
-Never send directly from an uncleaned export. Copy the example and place the
-raw data in `prospects.csv`, then run:
+Never send directly from a wide CRM export. Use two steps:
+
+### Step A — strip the export (`--strip-export`)
+
+Keeps six columns only; does not validate phones or drop rows. Writes
+`<input-stem>_cleaned.csv` (UTF-8). Maps CRM headers such as `First Name`,
+`Phone Number`, `Date Created`, `*Country of Residence`, `*Meta Country`, and
+`*Sign Up Comment`.
 
 ```powershell
-python outreach.py --prepare --input prospects.csv
+python outreach.py --strip-export --input "oc14oct25.csv"
 ```
+
+### Step B — validate for sending (`--prepare`)
+
+```powershell
+python outreach.py --prepare --input "oc14oct25_cleaned.csv"
+```
+
+By default this writes `oc14oct25_cleaned_prepared.csv` (does not overwrite
+`cleaned_prospects.csv`). Rename with `--cleaned-output path.csv`.
 
 Preparation never opens a browser or sends a message. It creates:
 
-- `cleaned_prospects.csv`: eligible, deduplicated contacts with E.164 numbers.
-- `review_queue.csv`: invalid, ambiguous, duplicate, opted-out, no-consent, and
-  do-not-contact rows with a reason.
+- `<stem>_prepared.csv`: eligible, deduplicated contacts with E.164 numbers,
+  sorted **oldest `date created` first** when that column is present.
+- `review_queue.csv` (or `--review`): invalid, duplicate, and similar rows.
 
 Spanish country names and accents are supported. The primary mappings include
 Colombia (`CO`), Costa Rica (`CR`), Mexico (`MX`), and Chile (`CL`), plus the
@@ -169,6 +185,9 @@ Notification failures produce a warning but do not change the batch results.
 - Sends incomplete records to `review_queue.csv`.
 - Enforces a per-run message limit and inter-message delay.
 - Uses each message-bank entry once before reshuffling the bank.
+- Contacts people in **oldest `date created` first** order by default so the
+  longest-waiting inquiries are reached first (not random). Message templates and
+  delays between sends are still randomized.
 - Records skipped, dry-run, failed, and requested-send results.
 
 Use a new unique `--campaign` value for a genuinely different campaign. Reusing
@@ -184,14 +203,17 @@ attempts do not increase the reached count.
 ## Useful options
 
 ```text
---prepare                Clean the dataset and exit without sending
+--strip-export           Keep six CRM columns; write <stem>_cleaned.csv
+--strip-output PATH      Output path for --strip-export
+--prepare                Validate phones; default output <stem>_prepared.csv
 --input PATH             Input CSV (default: prospects.csv)
---cleaned-output PATH    Prepared eligible CSV (default: cleaned_prospects.csv)
+--cleaned-output PATH    Prepared eligible CSV (override --prepare default name)
 --messages PATH          JSON bank containing at least 10 messages
 --log PATH               Audit CSV (default: outreach_log.csv)
 --review PATH            Human-review CSV (default: review_queue.csv)
 --do-not-contact PATH     Block-list CSV (default: do_not_contact.csv)
 --default-region CODE     Fallback region for the do-not-contact list (default: VC)
+--contact-order MODE      oldest-first (default) or file-order
 --max-messages NUMBER     Maximum real send requests per run (default: 10)
 --min-delay SECONDS       Minimum random delay (default: 45)
 --max-delay SECONDS       Maximum random delay (default: 90)

@@ -90,6 +90,66 @@ class OutreachTests(unittest.TestCase):
             self.assertEqual({row["validation_status"] for row in review_rows}, {"duplicate", "invalid_number"})
             self.assertEqual(counts["corrected_from_country"], 1)
 
+    def test_strip_export_maps_crm_export(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "export.csv"
+            output = root / "export_cleaned.csv"
+            source.write_text(
+                'ID,"First Name","Last Name","Phone Number","Date Created",'
+                '"*Meta Country","*Country of Residence","*Sign Up Comment"\n'
+                '1,Aldo,Garita,+522211400077,"2026-09-29 13:51:50",MX,Mexico,Hola\n',
+                encoding="utf-8",
+            )
+            result = outreach.main(["--strip-export", "--input", str(source)])
+            self.assertEqual(result, 0)
+            with output.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(rows[0]["country"], "Mexico")
+            self.assertEqual(rows[0]["date created"], "2026-09-29 13:51:50")
+
+    def test_prepare_sorts_cleaned_rows_oldest_date_created_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "raw.csv"
+            clean = root / "clean.csv"
+            review = root / "review.csv"
+            source.write_text(
+                "first name,last name,phone,country,date created\n"
+                "New,Person,3001234567,Colombia,2026-09-25 12:00:00\n"
+                "Old,Person,3007654321,Colombia,2026-09-20 08:00:00\n"
+                "Mid,Person,3001111111,Colombia,2026-09-22 10:00:00\n",
+                encoding="utf-8",
+            )
+            outreach.prepare_dataset(source, clean, review, root / "dnc.csv", "VC")
+            with clean.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual([row["first_name"] for row in rows], ["Old", "Mid", "New"])
+
+    def test_send_run_contacts_oldest_date_created_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_path = root / "prospects.csv"
+            log_path = root / "log.csv"
+            input_path.write_text(
+                "first_name,phone,country,opt_out,date created\n"
+                "New,+573001234567,Colombia,no,2026-09-25 12:00:00\n"
+                "Old,+573007654321,Colombia,no,2026-09-20 08:00:00\n",
+                encoding="utf-8",
+            )
+            with patch.object(outreach, "send_whatsapp"):
+                outreach.main([
+                    "--input", str(input_path),
+                    "--log", str(log_path),
+                    "--review", str(root / "review.csv"),
+                    "--do-not-contact", str(root / "dnc.csv"),
+                    "--campaign", "order-test",
+                    "--academy-name", "Test Academy",
+                ])
+            with log_path.open(newline="", encoding="utf-8") as handle:
+                logged = [row for row in csv.DictReader(handle) if row["status"] == "dry_run"]
+            self.assertEqual(logged[0]["first_name"], "Old")
+
     def test_prepare_accepts_actual_contact_columns_without_consent_or_programme(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

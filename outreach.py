@@ -38,7 +38,15 @@ LOG_COLUMNS = [
 REVIEW_COLUMNS = ["campaign", "row_number", "first_name", "phone", "programme", "reason"]
 PREPARED_COLUMNS = [
     "first_name", "last_name", "phone", "country", "sign_up_comment",
-    "opt_out", "original_phone", "validation_status", "detected_region",
+    "date created", "opt_out", "original_phone", "validation_status", "detected_region",
+]
+CONTACT_ORDER_OLDEST_FIRST = "oldest-first"
+CONTACT_ORDER_FILE = "file-order"
+STRIP_EXPORT_HEADERS = [
+    "first name", "last name", "phone", "country", "sign up comment", "date created",
+]
+STRIP_EXPORT_FIELDS = [
+    "first_name", "last_name", "phone", "country", "sign_up_comment", "date_created",
 ]
 PREPARATION_REVIEW_COLUMNS = PREPARED_COLUMNS + ["validation_reason"]
 ALLOWED_TEMPLATE_FIELDS = {
@@ -57,6 +65,12 @@ COLUMN_ALIASES = {
     "sign up comment": "sign_up_comment",
     "signup comment": "sign_up_comment",
     "comments": "sign_up_comment",
+    "date created": "date_created",
+    "datecreated": "date_created",
+    "date_created": "date_created",
+    "created at": "date_created",
+    "meta country": "meta_country",
+    "country of residence": "country",
     "whatsapp consent": "whatsapp_consent",
     "opt out": "opt_out",
 }
@@ -110,6 +124,7 @@ class Prospect:
     opted_out: bool
     last_name: str = ""
     sign_up_comment: str = ""
+    date_created: str = ""
 
 
 class MessageBank:
@@ -260,20 +275,126 @@ def load_message_bank(path: Path) -> MessageBank:
     return MessageBank(validated, opt_out_text)
 
 
+def normalize_column_name(column: str) -> str:
+    spaced = normalize_country_key(column or "").replace("_", " ")
+    if spaced in COLUMN_ALIASES:
+        return COLUMN_ALIASES[spaced]
+    snake = normalize_country_key(column or "").replace(" ", "_")
+    return COLUMN_ALIASES.get(spaced, snake)
+
+
+def read_csv_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            return []
+        normalized_fields = [normalize_column_name(column) for column in reader.fieldnames]
+        rows: list[dict[str, str]] = []
+        for raw_row in reader:
+            merged: dict[str, str] = {}
+            for field, value in zip(normalized_fields, raw_row.values()):
+                text = "" if value is None else str(value)
+                if field not in merged or not merged[field].strip():
+                    merged[field] = text
+            rows.append(merged)
+        return rows
+
+
 def read_csv(
     path: Path, required_columns: set[str] = REQUIRED_COLUMNS
 ) -> tuple[list[dict[str, str]], list[str]]:
-    with path.open(newline="", encoding="utf-8-sig") as handle:
-        reader = csv.DictReader(handle)
-        reader.fieldnames = [
-            COLUMN_ALIASES.get(
-                normalize_country_key(column or "").replace("_", " "),
-                normalize_country_key(column or "").replace(" ", "_"),
-            )
-            for column in (reader.fieldnames or [])
-        ]
-        missing = sorted(required_columns - set(reader.fieldnames or []))
-        return ([], missing) if missing else (list(reader), [])
+    rows = read_csv_rows(path)
+    if rows:
+        present = set(rows[0].keys())
+    else:
+        present = set()
+        with path.open(newline="", encoding="utf-8-sig") as handle:
+            reader = csv.DictReader(handle)
+            present = {normalize_column_name(column) for column in (reader.fieldnames or [])}
+    if "country" in required_columns and "country" not in present and "meta_country" in present:
+        present = set(present) | {"country"}
+    missing = sorted(required_columns - present)
+    return ([], missing) if missing else (rows, [])
+
+
+def country_from_row(row: dict[str, str]) -> str:
+    country = (row.get("country") or "").strip()
+    if country:
+        return country
+    return (row.get("meta_country") or "").strip()
+
+
+def default_strip_output_path(input_path: Path) -> Path:
+    stem = input_path.stem
+    if stem.endswith("_cleaned"):
+        return input_path.with_name(f"{stem}_columns{input_path.suffix}")
+    return input_path.with_name(f"{stem}_cleaned{input_path.suffix}")
+
+
+def default_prepare_cleaned_path(input_path: Path) -> Path:
+    return input_path.with_name(f"{input_path.stem}_prepared{input_path.suffix}")
+
+
+def strip_export_columns(input_path: Path, output_path: Path) -> int:
+    """Keep six outreach columns for every row; preserve order and empty cells."""
+    rows = read_csv_rows(input_path)
+    output_rows: list[dict[str, str]] = []
+    for row in rows:
+        export_row = {
+            "first_name": (row.get("first_name") or "").strip(),
+            "last_name": (row.get("last_name") or "").strip(),
+            "phone": (row.get("phone") or "").strip(),
+            "country": country_from_row(row),
+            "sign_up_comment": (row.get("sign_up_comment") or "").strip(),
+            "date_created": (row.get("date_created") or "").strip(),
+        }
+        output_rows.append(
+            {
+                header: export_row[field]
+                for header, field in zip(STRIP_EXPORT_HEADERS, STRIP_EXPORT_FIELDS)
+            }
+        )
+    write_csv(output_path, STRIP_EXPORT_HEADERS, output_rows)
+    return len(output_rows)
+
+
+def parse_date_created(value: str) -> datetime | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def row_date_created_raw(row: dict[str, str]) -> str:
+    return (row.get("date_created") or row.get("date created") or "").strip()
+
+
+def sort_rows_by_date_created(
+    rows: list[dict[str, str]], *, oldest_first: bool = True
+) -> list[dict[str, str]]:
+    """Put oldest inquiries first; rows without a parseable date go last."""
+    if not oldest_first or not rows:
+        return rows
+
+    def sort_key(row: dict[str, str]) -> tuple[int, datetime]:
+        parsed = parse_date_created(row_date_created_raw(row))
+        if parsed is None:
+            return (1, datetime.max)
+        return (0, parsed)
+
+    return sorted(rows, key=sort_key)
+
+
+def rows_have_date_created(rows: list[dict[str, str]]) -> bool:
+    return any(parse_date_created(row_date_created_raw(row)) for row in rows)
 
 
 def write_csv(path: Path, columns: list[str], rows: list[dict[str, object]]) -> None:
@@ -303,7 +424,7 @@ def prepare_dataset(
 
     for row in rows:
         original_phone = (row.get("phone") or "").strip()
-        country = (row.get("country") or "").strip()
+        country = country_from_row(row)
         normalized, status, reason, detected = normalize_phone_from_country(
             original_phone, country
         )
@@ -330,6 +451,7 @@ def prepare_dataset(
             "phone": normalized or "",
             "country": country,
             "sign_up_comment": (row.get("sign_up_comment") or "").strip(),
+            "date created": (row.get("date_created") or "").strip(),
             "opt_out": "yes" if opted_out else "no",
             "original_phone": original_phone,
             "validation_status": status,
@@ -342,6 +464,7 @@ def prepare_dataset(
         else:
             review.append(output)
 
+    cleaned = sort_rows_by_date_created(cleaned, oldest_first=True)
     write_csv(cleaned_path, PREPARED_COLUMNS, cleaned)
     write_csv(review_path, PREPARATION_REVIEW_COLUMNS, review)
     return counts
@@ -569,10 +692,24 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--prepare",
         action="store_true",
-        help="Clean the input dataset and exit without sending",
+        help="Validate phones and split eligible rows from review (after --strip-export)",
+    )
+    parser.add_argument(
+        "--strip-export",
+        action="store_true",
+        help="Keep six CRM columns only and write <input-stem>_cleaned.csv",
+    )
+    parser.add_argument(
+        "--strip-output",
+        type=Path,
+        help="Output path for --strip-export (default: <input-stem>_cleaned.csv)",
     )
     parser.add_argument("--input", type=Path, default=Path("prospects.csv"))
-    parser.add_argument("--cleaned-output", type=Path, default=Path("cleaned_prospects.csv"))
+    parser.add_argument(
+        "--cleaned-output",
+        type=Path,
+        help="Prepared eligible CSV (--prepare default: <input-stem>_prepared.csv)",
+    )
     parser.add_argument("--campaign", help="Unique campaign name")
     parser.add_argument("--academy-name")
     parser.add_argument("--messages", type=Path, help="JSON bank containing at least 10 messages")
@@ -580,6 +717,12 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--review", type=Path, default=Path("review_queue.csv"))
     parser.add_argument("--do-not-contact", type=Path, default=Path("do_not_contact.csv"))
     parser.add_argument("--default-region", default="VC")
+    parser.add_argument(
+        "--contact-order",
+        choices=(CONTACT_ORDER_OLDEST_FIRST, CONTACT_ORDER_FILE),
+        default=CONTACT_ORDER_OLDEST_FIRST,
+        help="Contact oldest signups first when date created is present (default)",
+    )
     parser.add_argument("--max-messages", type=int, default=10)
     parser.add_argument("--delay", type=int, help="Use a fixed delay instead of random pacing")
     parser.add_argument("--min-delay", type=int, default=45)
@@ -605,8 +748,15 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         help="Optional ntfy access token; NTFY_TOKEN is preferred",
     )
     args = parser.parse_args(argv)
-    if not args.prepare and (not args.campaign or not args.academy_name):
-        parser.error("--campaign and --academy-name are required unless --prepare is used")
+    if args.strip_export and args.prepare:
+        parser.error("Use --strip-export and --prepare as separate steps, not together")
+    if not args.prepare and not args.strip_export and (
+        not args.campaign or not args.academy_name
+    ):
+        parser.error(
+            "--campaign and --academy-name are required unless --prepare or "
+            "--strip-export is used"
+        )
     if args.max_messages < 1:
         parser.error("--max-messages must be at least 1")
     if args.delay is not None and args.delay < 0:
@@ -623,11 +773,26 @@ def main(argv: Iterable[str] | None = None) -> int:
     if not args.input.exists():
         print(f"Input file not found: {args.input}", file=sys.stderr)
         return 2
+    if args.strip_export:
+        output_path = args.strip_output or default_strip_output_path(args.input)
+        try:
+            row_count = strip_export_columns(args.input, output_path)
+        except OSError as exc:
+            print(f"Export strip failed: {exc}", file=sys.stderr)
+            return 2
+        prepared = default_prepare_cleaned_path(output_path)
+        print("Column export completed; no phone validation or messages were sent.")
+        print(f"Stripped export: {output_path} ({row_count} rows)")
+        print("Next step:")
+        print(f"  python outreach.py --prepare --input \"{output_path}\"")
+        print(f"  (writes {prepared} by default; add --cleaned-output to rename)")
+        return 0
     if args.prepare:
+        cleaned_path = args.cleaned_output or default_prepare_cleaned_path(args.input)
         try:
             counts = prepare_dataset(
                 args.input,
-                args.cleaned_output,
+                cleaned_path,
                 args.review,
                 args.do_not_contact,
                 args.default_region,
@@ -636,7 +801,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             print(f"Preparation failed: {exc}", file=sys.stderr)
             return 2
         print("Dataset preparation completed; no messages were sent.")
-        print(f"Cleaned: {args.cleaned_output}")
+        print(f"Cleaned: {cleaned_path} (sorted oldest date created first)")
         print(f"Review: {args.review}")
         for status, count in sorted(counts.items()):
             print(f"  {status}: {count}")
@@ -646,6 +811,18 @@ def main(argv: Iterable[str] | None = None) -> int:
     if missing:
         print(f"Missing required CSV columns: {', '.join(missing)}", file=sys.stderr)
         return 2
+    oldest_first = args.contact_order == CONTACT_ORDER_OLDEST_FIRST
+    if oldest_first:
+        rows = sort_rows_by_date_created(rows, oldest_first=True)
+        if rows_have_date_created(rows):
+            print("Contact order: oldest date created first (longest wait first)")
+        else:
+            print(
+                "Warning: no parseable date created in input; using file order.",
+                file=sys.stderr,
+            )
+    else:
+        print("Contact order: file order (as in the CSV)")
     print(f"Academy Outreach — {'REAL SEND' if args.send else 'DRY RUN'} — campaign: {args.campaign}")
     blocked = load_do_not_contact(args.do_not_contact, args.default_region)
     previously_sent = load_previous_sends(args.log, args.campaign)
@@ -685,6 +862,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             opted_out=is_truthy(row.get("opt_out")),
             last_name=(row.get("last_name") or "").strip(),
             sign_up_comment=(row.get("sign_up_comment") or "").strip(),
+            date_created=(row.get("date_created") or "").strip(),
         )
         if prospect.opted_out:
             log_result(args.log, args.campaign, prospect, "skipped_opt_out")
@@ -724,7 +902,12 @@ def main(argv: Iterable[str] | None = None) -> int:
             if args.delay is not None
             else delay_random.randint(args.min_delay, args.max_delay)
         )
-        print(f"\n{prospect.first_name} ({phone}) [template: {template_id}]\n{message}")
+        date_label = (prospect.date_created or "").strip()
+        if date_label:
+            header = f"{prospect.first_name} ({phone}) — date created: {date_label}"
+        else:
+            header = f"{prospect.first_name} ({phone})"
+        print(f"\n{header} [template: {template_id}]\n{message}")
         if args.confirm_each and input("Process this message? [y/N]: ").strip().lower() != "y":
             log_result(
                 args.log, args.campaign, prospect, "skipped_by_operator",
