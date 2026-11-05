@@ -1,0 +1,10 @@
+Date: 15/9/2026
+Time: 1:7
+Phone Number: +17844545987
+Message: Hello Jose, this is Nombre de la Academia. You expressed interest in Information Technology. Would you like information about the admission requirements and application process? Reply STOP if you do not want further WhatsApp messages.
+--------------------
+Date: 15/9/2026
+Time: 1:11
+Phone Number: +17844545987
+Message: Hello Jose, this is Your Academy. You expressed interest in Information Technology. Would you like information about the admission requirements and application process? Reply STOP if you do not want further WhatsApp messages.
+--------------------

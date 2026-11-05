@@ -633,15 +633,207 @@ def add_to_review(path: Path, campaign: str, prospect: Prospect, reason: str) ->
     })
 
 
-def send_whatsapp(phone: str, message: str, wait_time: int, close_time: int) -> None:
-    """Open, focus, and submit a pre-filled WhatsApp Web message on Windows.
+BROWSER_WORDS = (
+    "chrome", "chromium", "edge", "firefox", "brave", "opera", "vivaldi",
+    "librewolf", "floorp", "zen", "falkon",
+)
+WINDOW_SEARCH_SECONDS = 20
+FOCUS_ATTEMPTS = 4
+ENTER_PRESS_GAP_SECONDS = 1.5
 
-    PyWhatKit's instant sender can lose browser focus before its final Enter
-    keypress. This small adapter uses the same browser-automation approach but
-    explicitly finds the WhatsApp browser window before submitting.
+
+@dataclass(frozen=True)
+class BrowserWindow:
+    """Platform-neutral reference to a desktop window."""
+
+    handle: object
+    title: str
+
+
+def _is_windows() -> bool:
+    return sys.platform == "win32"
+
+
+def _is_linux() -> bool:
+    return sys.platform.startswith("linux")
+
+
+def _xdotool(*args: str) -> str:
+    """Run xdotool (Linux/X11) and return stdout; empty string if nothing matched."""
+    import shutil
+    import subprocess
+
+    executable = shutil.which("xdotool")
+    if not executable:
+        raise RuntimeError(
+            "xdotool is required on Linux to find and focus the browser window. "
+            "Install it with: sudo apt install xdotool"
+        )
+    result = subprocess.run(
+        [executable, *args], capture_output=True, text=True, timeout=10, check=False
+    )
+    return result.stdout.strip()
+
+
+def ensure_desktop_automation_ready() -> None:
+    """Fail early, with an actionable message, if the desktop cannot be automated."""
+    if _is_windows():
+        return
+    if _is_linux():
+        if (os.environ.get("XDG_SESSION_TYPE") or "").lower() == "wayland":
+            raise RuntimeError(
+                "This session is running Wayland, where PyAutoGUI and xdotool cannot "
+                "control other windows. Log out and choose the X11 session "
+                "(e.g. 'Lubuntu' / LXQt on X11) at the login screen."
+            )
+        if not os.environ.get("DISPLAY"):
+            raise RuntimeError(
+                "No DISPLAY found. Run the script from a desktop terminal session."
+            )
+        _xdotool("version")  # raises a clear error if xdotool is missing
+        return
+    raise RuntimeError(f"Unsupported platform for WhatsApp automation: {sys.platform}")
+
+
+def list_whatsapp_windows() -> list[BrowserWindow]:
+    """Return visible windows whose title mentions WhatsApp."""
+    if _is_windows():
+        import pygetwindow
+
+        return [
+            BrowserWindow(window, window.title)
+            for window in pygetwindow.getAllWindows()
+            if "whatsapp" in (window.title or "").lower()
+        ]
+    found: list[BrowserWindow] = []
+    for window_id in _xdotool("search", "--onlyvisible", "--name", "[Ww]hats[Aa]pp").split():
+        title = _xdotool("getwindowname", window_id)
+        if "whatsapp" in title.lower():
+            found.append(BrowserWindow(window_id, title))
+    return found
+
+
+def pick_browser_window(candidates: list[BrowserWindow]) -> BrowserWindow | None:
+    if not candidates:
+        return None
+    return next(
+        (
+            item
+            for item in candidates
+            if any(word in item.title.lower() for word in BROWSER_WORDS)
+        ),
+        candidates[0],
+    )
+
+
+def activate_window(window: BrowserWindow) -> None:
+    if _is_windows():
+        handle = window.handle
+        try:
+            if handle.isMinimized:
+                handle.restore()
+            handle.activate()
+        except Exception:
+            # PyGetWindow often raises "Error code from Windows: 0 - The operation
+            # completed successfully" even though focus changed. The caller
+            # verifies the active window afterwards, so it is safe to ignore.
+            pass
+        return
+    _xdotool("windowactivate", str(window.handle))
+    _xdotool("windowfocus", str(window.handle))
+
+
+def active_window_title() -> str:
+    try:
+        if _is_windows():
+            import pygetwindow
+
+            active = pygetwindow.getActiveWindow()
+            return (active.title if active else "") or ""
+        return _xdotool("getactivewindow", "getwindowname")
+    except Exception:
+        return ""
+
+
+def window_geometry(window: BrowserWindow) -> tuple[int, int, int, int] | None:
+    """Return left, top, width, height or None if it cannot be determined."""
+    if _is_windows():
+        handle = window.handle
+        return handle.left, handle.top, handle.width, handle.height
+    values: dict[str, int] = {}
+    for line in _xdotool("getwindowgeometry", "--shell", str(window.handle)).splitlines():
+        key, _, value = line.partition("=")
+        if value.strip().lstrip("-").isdigit():
+            values[key.strip()] = int(value)
+    try:
+        return values["X"], values["Y"], values["WIDTH"], values["HEIGHT"]
+    except KeyError:
+        return None
+
+
+def whatsapp_is_focused() -> bool:
+    return "whatsapp" in active_window_title().lower()
+
+
+def focus_whatsapp_window(wait_seconds: int = WINDOW_SEARCH_SECONDS) -> BrowserWindow:
+    """Find the WhatsApp browser window, bring it forward, and confirm focus."""
+    deadline = time.monotonic() + wait_seconds
+    window = None
+    while True:
+        window = pick_browser_window(list_whatsapp_windows())
+        if window or time.monotonic() >= deadline:
+            break
+        time.sleep(1)
+    if window is None:
+        raise RuntimeError(
+            "WhatsApp Web opened, but its browser window could not be found. "
+            "Keep the browser visible and make it your default browser."
+        )
+    for _ in range(FOCUS_ATTEMPTS):
+        activate_window(window)
+        time.sleep(1.5)
+        if whatsapp_is_focused():
+            return window
+        # The window handle can go stale if the browser re-creates the window.
+        window = pick_browser_window(list_whatsapp_windows()) or window
+    raise RuntimeError(
+        "Could not bring the WhatsApp window to the front; no keys were pressed. "
+        "Close extra browser windows and keep the desktop unlocked."
+    )
+
+
+def click_composer_area(window: BrowserWindow, pyautogui_module) -> None:
+    """Optional click near the composer, clamped to the window and the screen."""
+    geometry = window_geometry(window)
+    if geometry is None:
+        return
+    left, top, width, height = geometry
+    screen_width, screen_height = pyautogui_module.size()
+    x = min(max(left + width // 2, 5), screen_width - 5)
+    y = min(max(top + height - 65, 5), screen_height - 5)
+    pyautogui_module.click(x, y)
+    time.sleep(1)
+
+
+def send_whatsapp(
+    phone: str,
+    message: str,
+    wait_time: int,
+    close_time: int,
+    *,
+    click_composer: bool = False,
+    enter_presses: int = 2,
+) -> None:
+    """Open, focus, and submit a pre-filled WhatsApp Web message (Windows/Linux X11).
+
+    The chat URL pre-fills the composer, and WhatsApp Web focuses it by itself,
+    so by default no blind mouse click is made. The script confirms the WhatsApp
+    window really has focus before pressing any key, presses Enter more than
+    once (a second Enter on an empty composer is harmless) and only closes the
+    tab if WhatsApp is still the active window.
     """
+    ensure_desktop_automation_ready()
     import pyautogui
-    import pygetwindow
 
     recipient = phone.lstrip("+")
     url = (
@@ -652,39 +844,24 @@ def send_whatsapp(phone: str, message: str, wait_time: int, close_time: int) -> 
         raise RuntimeError("The default browser could not be opened.")
 
     time.sleep(wait_time)
-    candidates = [
-        window
-        for window in pygetwindow.getAllWindows()
-        if "whatsapp" in (window.title or "").lower()
-    ]
-    if not candidates:
-        raise RuntimeError(
-            "WhatsApp Web opened, but its browser window could not be found. "
-            "Keep the browser visible and make it your default browser."
-        )
-
-    browser_words = ("chrome", "edge", "firefox", "brave", "opera")
-    window = next(
-        (
-            item
-            for item in candidates
-            if any(word in item.title.lower() for word in browser_words)
-        ),
-        candidates[0],
-    )
-    if window.isMinimized:
-        window.restore()
-    window.activate()
-    time.sleep(2)
-
-    # WhatsApp's composer is near the bottom-centre of the active chat pane.
-    click_x = window.left + (window.width // 2)
-    click_y = window.top + window.height - 65
-    pyautogui.click(click_x, click_y)
+    window = focus_whatsapp_window()
     time.sleep(1)
-    pyautogui.press("enter")
+
+    if click_composer:
+        click_composer_area(window, pyautogui)
+        if not whatsapp_is_focused():
+            raise RuntimeError("The composer click moved focus away from WhatsApp.")
+
+    for attempt in range(max(enter_presses, 1)):
+        if not whatsapp_is_focused():
+            raise RuntimeError("WhatsApp lost focus before the message was submitted.")
+        pyautogui.press("enter")
+        if attempt + 1 < enter_presses:
+            time.sleep(ENTER_PRESS_GAP_SECONDS)
+
     time.sleep(max(close_time, 2))
-    pyautogui.hotkey("ctrl", "w")
+    if whatsapp_is_focused():
+        pyautogui.hotkey("ctrl", "w")
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -729,6 +906,17 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-delay", type=int, default=90)
     parser.add_argument("--wait-time", type=int, default=20)
     parser.add_argument("--close-time", type=int, default=3)
+    parser.add_argument(
+        "--enter-presses",
+        type=int,
+        default=2,
+        help="Times Enter is pressed per message (extra presses are harmless; default 2)",
+    )
+    parser.add_argument(
+        "--click-composer",
+        action="store_true",
+        help="Click near the message box before pressing Enter (off by default)",
+    )
     parser.add_argument("--confirm-each", action="store_true")
     parser.add_argument("--send", action="store_true", help="Enable real WhatsApp Web automation")
     parser.add_argument("--yes", action="store_true", help="Skip the one-time SEND confirmation")
@@ -763,6 +951,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         parser.error("--delay cannot be negative")
     if args.min_delay < 0 or args.max_delay < args.min_delay:
         parser.error("--min-delay must be non-negative and not exceed --max-delay")
+    if args.enter_presses < 1:
+        parser.error("--enter-presses must be at least 1")
     if args.wait_time < 1 or args.close_time < 0:
         parser.error("delay/close-time cannot be negative and wait-time must be positive")
     return args
@@ -832,6 +1022,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     run_target = min(args.max_messages, remaining_at_start)
     if args.send:
         print_run_progress(0, run_target)
+    if args.send:
+        try:
+            ensure_desktop_automation_ready()
+        except RuntimeError as exc:
+            print(f"Cannot start real send: {exc}", file=sys.stderr)
+            return 2
     if args.send and not args.yes:
         confirmation = input(f"REAL SEND is enabled (limit {args.max_messages}). Type SEND to continue: ")
         if confirmation != "SEND":
@@ -922,7 +1118,11 @@ def main(argv: Iterable[str] | None = None) -> int:
             print(f"Planned delay before the next send: {planned_delay} seconds")
             continue
         try:
-            send_whatsapp(phone, message, args.wait_time, args.close_time)
+            send_whatsapp(
+                phone, message, args.wait_time, args.close_time,
+                click_composer=args.click_composer,
+                enter_presses=args.enter_presses,
+            )
             sent_count += 1
             # Browser automation can confirm only that sending was requested.
             log_result(

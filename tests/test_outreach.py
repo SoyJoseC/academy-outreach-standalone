@@ -2,6 +2,7 @@ import csv
 import json
 import tempfile
 import unittest
+import unittest.mock
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -260,12 +261,20 @@ class OutreachTests(unittest.TestCase):
                 "--academy-name", "Test Academy",
                 "--send", "--yes", "--delay", "0",
             ]
-            with patch.object(outreach, "send_whatsapp"), redirect_stdout(StringIO()) as first:
+            with (
+                patch.object(outreach, "ensure_desktop_automation_ready"),
+                patch.object(outreach, "send_whatsapp"),
+                redirect_stdout(StringIO()) as first,
+            ):
                 self.assertEqual(outreach.main(common_args + ["--max-messages", "2"]), 0)
             self.assertIn("Campaign progress: 2/3 reached", first.getvalue())
             self.assertIn("Run progress: 2/2 contacted this run", first.getvalue())
 
-            with patch.object(outreach, "send_whatsapp"), redirect_stdout(StringIO()) as second:
+            with (
+                patch.object(outreach, "ensure_desktop_automation_ready"),
+                patch.object(outreach, "send_whatsapp"),
+                redirect_stdout(StringIO()) as second,
+            ):
                 self.assertEqual(outreach.main(common_args + ["--max-messages", "2"]), 0)
             self.assertIn("Campaign progress: 3/3 reached", second.getvalue())
             self.assertIn("Run progress: 1/1 contacted this run", second.getvalue())
@@ -279,6 +288,7 @@ class OutreachTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with (
+                patch.object(outreach, "ensure_desktop_automation_ready"),
                 patch.object(outreach, "send_whatsapp"),
                 patch.object(outreach, "send_ntfy_notification") as notify,
                 redirect_stdout(StringIO()) as output,
@@ -299,6 +309,43 @@ class OutreachTests(unittest.TestCase):
                 1, 1, 1, 1, 0, "",
             )
             self.assertIn("Run progress: 1/1 contacted this run", output.getvalue())
+
+    def test_send_whatsapp_refuses_to_press_keys_without_focus(self):
+        fake_gui = unittest.mock.MagicMock()
+        with (
+            patch.object(outreach, "ensure_desktop_automation_ready"),
+            patch.dict("sys.modules", {"pyautogui": fake_gui}),
+            patch.object(outreach.webbrowser, "open", return_value=True),
+            patch.object(outreach.time, "sleep"),
+            patch.object(
+                outreach, "list_whatsapp_windows",
+                return_value=[outreach.BrowserWindow(1, "WhatsApp - Firefox")],
+            ),
+            patch.object(outreach, "activate_window"),
+            patch.object(outreach, "active_window_title", return_value="Terminal"),
+        ):
+            with self.assertRaises(RuntimeError):
+                outreach.send_whatsapp("+573001234567", "hola", 1, 1)
+        fake_gui.press.assert_not_called()
+
+    def test_send_whatsapp_presses_enter_and_closes_tab_when_focused(self):
+        fake_gui = unittest.mock.MagicMock()
+        with (
+            patch.object(outreach, "ensure_desktop_automation_ready"),
+            patch.dict("sys.modules", {"pyautogui": fake_gui}),
+            patch.object(outreach.webbrowser, "open", return_value=True),
+            patch.object(outreach.time, "sleep"),
+            patch.object(
+                outreach, "list_whatsapp_windows",
+                return_value=[outreach.BrowserWindow(1, "WhatsApp - Firefox")],
+            ),
+            patch.object(outreach, "activate_window"),
+            patch.object(outreach, "active_window_title", return_value="WhatsApp - Firefox"),
+        ):
+            outreach.send_whatsapp("+573001234567", "hola", 1, 1, enter_presses=2)
+        self.assertEqual(fake_gui.press.call_count, 2)
+        fake_gui.click.assert_not_called()
+        fake_gui.hotkey.assert_called_once_with("ctrl", "w")
 
 
 if __name__ == "__main__":

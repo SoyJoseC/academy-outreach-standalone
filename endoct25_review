@@ -1,0 +1,26 @@
+first_name,last_name,phone,country,sign_up_comment,date created,opt_out,original_phone,validation_status,detected_region,validation_reason
+Ever,Peña,,Colombia,,2026-10-25 20:46:40,no,,invalid_number,,phone is empty
+Javier,Ordonez,,Colombia,,2026-10-25 20:27:52,no,+13144616853,country_mismatch,US,"country indicates CO, number indicates US"
+Cosette,Fantine,,Colombia,,2026-10-25 19:40:46,no,,invalid_number,,phone is empty
+Alberto,Mendez,,Colombia,,2026-10-25 17:46:52,no,,invalid_number,,phone is empty
+Del Carmen,Ortega,,Colombia,,2026-10-25 16:45:58,no,,invalid_number,,phone is empty
+German,Gamboa,,Costa Rica,,2026-10-25 16:28:56,no,,invalid_number,,phone is empty
+Idalmis,Ibarra,,Colombia,,2026-10-25 08:53:41,no,,invalid_number,,phone is empty
+Samantha,Yustes Tirado,,Colombia,,2026-10-24 16:31:55,no,+3233215210,country_mismatch,BE,"country indicates CO, number indicates BE"
+Raul Emilio,Naranjo Mandon,,Colombia,,2026-10-24 15:52:27,no,,invalid_number,,phone is empty
+Deisy,Pinilla,,Colombia,,2026-10-24 12:11:06,no,31736665421,invalid_number,,number is not valid for its numbering plan
+Jorge,Laparra Marroquín,+525571445277,Mexico,,2026-10-24 00:11:35,no,+525571445277,duplicate,MX,normalized phone already appears in this dataset
+Luis,Buitrago,,Colombia,,2026-10-24 00:09:30,no,,invalid_number,,phone is empty
+Cesar,Santos,,Mexico,,2026-10-23 14:56:07,no,,invalid_number,,phone is empty
+Mónica,Ávila,,Colombia,,2026-10-23 07:57:34,no,+13166196651,country_mismatch,US,"country indicates CO, number indicates US"
+Ricardo,Delgado,,Mexico,,2026-10-23 04:01:18,no,+16623603130,country_mismatch,US,"country indicates MX, number indicates US"
+Nielcen,Ospina,+573117405390,Colombia,,2026-10-22 21:14:28,no,+573117405390,duplicate,CO,normalized phone already appears in this dataset
+Rubén,López,,Colombia,,2026-10-22 15:18:52,no,+13236421434,country_mismatch,US,"country indicates CO, number indicates US"
+Alan,Garrido,,Mexico,,2026-10-21 00:02:24,no,+1 8202652490,country_mismatch,US,"country indicates MX, number indicates US"
+Nataly,Montaño Moreno,,Colombia,Deseo tener la oportunidad de ejercer mi apoyo como voluntaria para estás comunidades me encanta la labor social es bonita,2026-10-20 12:34:58,no,,invalid_number,,phone is empty
+Melanie,Vega,,Costa Rica,,2026-10-18 21:47:45,no,+5066420612,invalid_number,,number has an impossible length or structure
+Almi,Muñoz,+573126283592,Colombia,Donde hay q ir,2026-10-18 20:45:35,no,3126283592,duplicate,CO,normalized phone already appears in this dataset
+Jose Ivan,cisneros,,Mexico,,2026-10-18 20:33:56,no,0526563596423,invalid_number,,number has an impossible length or structure
+arantza,alvarez,,Chile,,2026-10-18 18:52:04,no,+34620528734,country_mismatch,ES,"country indicates CL, number indicates ES"
+Estrella Nieto,Nieto,,Mexico,,2026-10-18 15:53:28,no,,invalid_number,,phone is empty
+Sergio,Posada Arrieta,,Colombia,More information please,2026-10-18 07:00:42,no,,invalid_number,,phone is empty

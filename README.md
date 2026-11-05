@@ -55,6 +55,32 @@ remain optional for compatibility with older files, but are not required. When
 Put one blocked phone number per line in `do_not_contact.csv`. The header is
 `phone`. Block-list numbers should use complete international format.
 
+## Linux (Lubuntu) setup
+
+Real sending works on Linux under an **X11** session (Lubuntu/LXQt on X11).
+Wayland sessions cannot be automated by PyAutoGUI/xdotool; the script detects
+this and stops with a message before sending anything.
+
+```bash
+sudo apt install python3-venv python3-tk python3-dev scrot xdotool
+git clone https://github.com/SoyJoseC/academy-outreach-standalone.git
+cd academy-outreach-standalone
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+Everything else (CSV preparation, dry runs, tests) works the same as on Windows.
+
+How sending works (Windows and Linux): the script opens the pre-filled chat,
+waits `--wait-time` seconds, finds the WhatsApp browser window, confirms it
+really has focus (it presses no key otherwise), presses Enter `--enter-presses`
+times (default 2; a second Enter on an empty box is harmless) and closes the tab
+only if WhatsApp is still the active window. No blind mouse click is made unless
+you add `--click-composer`. If chats open but messages do not send, increase
+`--wait-time` (for example `--wait-time 35`). `send_requested` in the log still
+means "keys were sent", not "delivered".
+
 ## 1. Prepare and review the dataset
 
 Never send directly from a wide CRM export. Use two steps:
