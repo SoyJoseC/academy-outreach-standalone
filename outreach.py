@@ -3,6 +3,9 @@
 
 Dry-run is the default. Real browser automation requires --send and an
 interactive confirmation (or --yes for an explicitly unattended invocation).
+
+--country limits a run to Colombia, Mexico, Costa Rica, Chile, or everyone
+else. Each of those groups can use its own message bank.
 """
 
 from __future__ import annotations
@@ -32,7 +35,7 @@ TRUTHY = {"1", "true", "yes", "y"}
 REQUIRED_COLUMNS = {"first_name", "phone"}
 PREPARE_REQUIRED_COLUMNS = REQUIRED_COLUMNS | {"country"}
 LOG_COLUMNS = [
-    "timestamp_utc", "campaign", "row_number", "first_name", "phone",
+    "timestamp_utc", "campaign", "row_number", "first_name", "phone", "country",
     "status", "template_id", "delay_seconds", "message", "error",
 ]
 REVIEW_COLUMNS = ["campaign", "row_number", "first_name", "phone", "programme", "reason"]
@@ -42,6 +45,30 @@ PREPARED_COLUMNS = [
 ]
 CONTACT_ORDER_OLDEST_FIRST = "oldest-first"
 CONTACT_ORDER_FILE = "file-order"
+PRIMARY_REGIONS = frozenset({"CO", "MX", "CR", "CL"})
+COUNTRY_FILTER_ALIASES = {
+    "colombia": "CO",
+    "co": "CO",
+    "mexico": "MX",
+    "mx": "MX",
+    "costa rica": "CR",  # --country costa_rica (underscores normalize to spaces)
+    "costarica": "CR",
+    "cr": "CR",
+    "chile": "CL",
+    "cl": "CL",
+    "other": "other",
+    "others": "other",
+    "otro": "other",
+    "otros": "other",
+}
+COUNTRY_GROUP_LABELS = {
+    "CO": "Colombia",
+    "MX": "Mexico",
+    "CR": "Costa Rica",
+    "CL": "Chile",
+    "other": "other",
+}
+COUNTRY_GROUP_ORDER = ("CO", "MX", "CR", "CL", "other")
 STRIP_EXPORT_HEADERS = [
     "first name", "last name", "phone", "country", "sign up comment", "date created",
 ]
@@ -50,7 +77,8 @@ STRIP_EXPORT_FIELDS = [
 ]
 PREPARATION_REVIEW_COLUMNS = PREPARED_COLUMNS + ["validation_reason"]
 ALLOWED_TEMPLATE_FIELDS = {
-    "first_name", "last_name", "programme", "sign_up_comment", "academy_name"
+    "first_name", "last_name", "programme", "sign_up_comment", "academy_name",
+    "country",
 }
 COLUMN_ALIASES = {
     "first name": "first_name",
@@ -125,6 +153,7 @@ class Prospect:
     last_name: str = ""
     sign_up_comment: str = ""
     date_created: str = ""
+    country: str = ""
 
 
 class MessageBank:
@@ -149,6 +178,7 @@ class MessageBank:
             programme=prospect.programme,
             sign_up_comment=prospect.sign_up_comment,
             academy_name=academy_name,
+            country=prospect.country,
         ).strip()
         rendered = f"{message} {self.opt_out_text}" if self.opt_out_text else message
         return template["id"], rendered
@@ -189,6 +219,14 @@ def resolve_country_region(value: str) -> str | None:
         return pycountry.countries.lookup(value.strip()).alpha_2
     except LookupError:
         return None
+
+
+def iter_country_message_paths(args: argparse.Namespace):
+    """Message banks for the four main markets. Keys match PRIMARY_REGIONS."""
+    yield "CO", args.messages_colombia
+    yield "MX", args.messages_mexico
+    yield "CR", args.messages_costa_rica
+    yield "CL", args.messages_chile
 
 
 def normalize_phone_from_country(
@@ -375,6 +413,123 @@ def parse_date_created(value: str) -> datetime | None:
 
 def row_date_created_raw(row: dict[str, str]) -> str:
     return (row.get("date_created") or row.get("date created") or "").strip()
+
+
+def as_naive_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def parse_country_selection(values: list[str]) -> set[str]:
+    """Map CLI country names to Colombia, Mexico, Costa Rica, Chile, or other."""
+    selected: set[str] = set()
+    unknown: list[str] = []
+    for raw in values:
+        for piece in raw.split(","):
+            key = normalize_country_key(piece)
+            if not key:
+                continue
+            group = COUNTRY_FILTER_ALIASES.get(key)
+            if group is None:
+                unknown.append(piece.strip())
+            else:
+                selected.add(group)
+    if unknown:
+        names = ", ".join(unknown)
+        raise ValueError(
+            f"Unknown country filter: {names}. "
+            "Use colombia, mexico, costa_rica, chile, or other."
+        )
+    return selected
+
+
+def parse_filter_bound(value: str, *, end_of_day: bool) -> datetime:
+    text = value.strip()
+    if not text:
+        raise ValueError("A date filter cannot be empty. Use YYYY-MM-DD.")
+    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        if fmt == "%Y-%m-%d" and end_of_day:
+            return parsed.replace(hour=23, minute=59, second=59)
+        return parsed
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"Could not parse date '{value}'. Use YYYY-MM-DD.") from exc
+    parsed = as_naive_utc(parsed)
+    if end_of_day and "T" not in text and " " not in text:
+        return parsed.replace(hour=23, minute=59, second=59)
+    return parsed
+
+
+def region_from_phone(value: str) -> str | None:
+    raw = (value or "").strip()
+    if not (raw.startswith("+") or raw.startswith("00")):
+        return None
+    parse_value = f"+{raw[2:]}" if raw.startswith("00") else raw
+    try:
+        parsed = phonenumbers.parse(parse_value, None)
+    except phonenumbers.NumberParseException:
+        return None
+    if not phonenumbers.is_valid_number(parsed):
+        return None
+    return phonenumbers.region_code_for_number(parsed) or None
+
+
+def contact_region(row: dict[str, str]) -> str | None:
+    region = resolve_country_region(country_from_row(row))
+    if region:
+        return region
+    return region_from_phone(row.get("phone") or "")
+
+
+def row_matches_country(row: dict[str, str], groups: set[str]) -> bool:
+    if not groups:
+        return True
+    region = contact_region(row)
+    if region in groups:
+        return True
+    return "other" in groups and region not in PRIMARY_REGIONS
+
+
+def row_matches_date(
+    row: dict[str, str], start: datetime | None, end: datetime | None
+) -> bool:
+    if start is None and end is None:
+        return True
+    parsed = parse_date_created(row_date_created_raw(row))
+    if parsed is None:
+        return False
+    parsed = as_naive_utc(parsed)
+    if start is not None and parsed < start:
+        return False
+    if end is not None and parsed > end:
+        return False
+    return True
+
+
+def describe_contact_filter(
+    country_groups: set[str], date_from: str, date_to: str, on_date: str
+) -> str:
+    parts: list[str] = []
+    if country_groups:
+        labels = [
+            COUNTRY_GROUP_LABELS[group]
+            for group in COUNTRY_GROUP_ORDER
+            if group in country_groups
+        ]
+        parts.append("country: " + ", ".join(labels))
+    if on_date:
+        parts.append(f"date created: {on_date}")
+    elif date_from or date_to:
+        start = date_from or "…"
+        finish = date_to or "…"
+        parts.append(f"date created: {start} to {finish}")
+    return "; ".join(parts)
 
 
 def sort_rows_by_date_created(
@@ -614,6 +769,7 @@ def log_result(
         "row_number": prospect.row_number,
         "first_name": prospect.first_name,
         "phone": prospect.phone,
+        "country": prospect.country,
         "status": status,
         "template_id": template_id,
         "delay_seconds": delay_seconds,
@@ -889,7 +1045,31 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--campaign", help="Unique campaign name")
     parser.add_argument("--academy-name")
-    parser.add_argument("--messages", type=Path, help="JSON bank containing at least 10 messages")
+    parser.add_argument(
+        "--messages",
+        type=Path,
+        help="JSON bank for Other, and the fallback when a country bank is not set",
+    )
+    parser.add_argument(
+        "--messages-colombia",
+        type=Path,
+        help="Message bank used for Colombia instead of --messages",
+    )
+    parser.add_argument(
+        "--messages-mexico",
+        type=Path,
+        help="Message bank used for Mexico instead of --messages",
+    )
+    parser.add_argument(
+        "--messages-costa-rica",
+        type=Path,
+        help="Message bank used for Costa Rica instead of --messages",
+    )
+    parser.add_argument(
+        "--messages-chile",
+        type=Path,
+        help="Message bank used for Chile instead of --messages",
+    )
     parser.add_argument("--log", type=Path, default=Path("outreach_log.csv"))
     parser.add_argument("--review", type=Path, default=Path("review_queue.csv"))
     parser.add_argument("--do-not-contact", type=Path, default=Path("do_not_contact.csv"))
@@ -899,6 +1079,28 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         choices=(CONTACT_ORDER_OLDEST_FIRST, CONTACT_ORDER_FILE),
         default=CONTACT_ORDER_OLDEST_FIRST,
         help="Contact oldest signups first when date created is present (default)",
+    )
+    parser.add_argument(
+        "--country",
+        action="append",
+        default=[],
+        metavar="GROUP",
+        help=(
+            "Only contact these groups: colombia, mexico, costa_rica, chile, or other. "
+            "Repeat the flag or separate names with commas."
+        ),
+    )
+    parser.add_argument(
+        "--date",
+        help="Only contacts whose date created falls on this day (YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--date-from",
+        help="Only contacts created on or after this date (YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--date-to",
+        help="Only contacts created on or before this date (YYYY-MM-DD)",
     )
     parser.add_argument("--max-messages", type=int, default=10)
     parser.add_argument("--delay", type=int, help="Use a fixed delay instead of random pacing")
@@ -938,6 +1140,17 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.strip_export and args.prepare:
         parser.error("Use --strip-export and --prepare as separate steps, not together")
+    if (args.prepare or args.strip_export) and (
+        args.country
+        or args.date
+        or args.date_from
+        or args.date_to
+        or any(path for _, path in iter_country_message_paths(args))
+    ):
+        parser.error(
+            "Country filters, date filters, and country message files are only used "
+            "when previewing or sending"
+        )
     if not args.prepare and not args.strip_export and (
         not args.campaign or not args.academy_name
     ):
@@ -955,11 +1168,43 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         parser.error("--enter-presses must be at least 1")
     if args.wait_time < 1 or args.close_time < 0:
         parser.error("delay/close-time cannot be negative and wait-time must be positive")
+    if args.date and (args.date_from or args.date_to):
+        parser.error("Use either --date or --date-from/--date-to, not both")
+    try:
+        args.country_groups = parse_country_selection(args.country)
+        if args.date:
+            args.date_from_dt = parse_filter_bound(args.date, end_of_day=False)
+            args.date_to_dt = parse_filter_bound(args.date, end_of_day=True)
+        else:
+            args.date_from_dt = (
+                parse_filter_bound(args.date_from, end_of_day=False) if args.date_from else None
+            )
+            args.date_to_dt = (
+                parse_filter_bound(args.date_to, end_of_day=True) if args.date_to else None
+            )
+    except ValueError as exc:
+        parser.error(str(exc))
+    if (
+        args.date_from_dt is not None
+        and args.date_to_dt is not None
+        and args.date_from_dt > args.date_to_dt
+    ):
+        parser.error("--date-from cannot be after --date-to")
     return args
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    args = parse_args(argv)
+    raw = sys.argv[1:] if argv is None else list(argv)
+    if raw and raw[0] in {"--gui", "gui"}:
+        if len(raw) != 1:
+            print("The command maker does not take other arguments.", file=sys.stderr)
+            print("Run: python outreach.py --gui", file=sys.stderr)
+            return 2
+        from command_maker import launch
+
+        launch()
+        return 0
+    args = parse_args(raw)
     if not args.input.exists():
         print(f"Input file not found: {args.input}", file=sys.stderr)
         return 2
@@ -1013,10 +1258,30 @@ def main(argv: Iterable[str] | None = None) -> int:
             )
     else:
         print("Contact order: file order (as in the CSV)")
+    filter_active = bool(args.country_groups or args.date_from_dt or args.date_to_dt)
+    selected = [
+        (row_number, row)
+        for row_number, row in enumerate(rows, start=2)
+        if row_matches_country(row, args.country_groups)
+        and row_matches_date(row, args.date_from_dt, args.date_to_dt)
+    ]
+    if filter_active:
+        print(
+            "Contact filter: "
+            + describe_contact_filter(
+                args.country_groups, args.date_from or "", args.date_to or "", args.date or ""
+            )
+        )
+        print(f"Selected rows: {len(selected)} of {len(rows)}")
+        if not selected:
+            print("No contacts match this country and date filter.")
+            return 0
     print(f"Academy Outreach — {'REAL SEND' if args.send else 'DRY RUN'} — campaign: {args.campaign}")
     blocked = load_do_not_contact(args.do_not_contact, args.default_region)
     previously_sent = load_previous_sends(args.log, args.campaign)
-    eligible_phones = eligible_phone_numbers(rows, blocked, args.default_region)
+    eligible_phones = eligible_phone_numbers(
+        [row for _, row in selected], blocked, args.default_region
+    )
     print_campaign_progress(eligible_phones, previously_sent)
     remaining_at_start = len(eligible_phones - previously_sent)
     run_target = min(args.max_messages, remaining_at_start)
@@ -1033,16 +1298,30 @@ def main(argv: Iterable[str] | None = None) -> int:
         if confirmation != "SEND":
             print("Cancelled; no messages were sent.")
             return 1
+    message_bank = None
+    country_banks: dict[str, MessageBank] = {}
     try:
-        message_bank = load_message_bank(args.messages) if args.messages else None
+        if args.messages:
+            message_bank = load_message_bank(args.messages)
+        for group, path in iter_country_message_paths(args):
+            if path:
+                country_banks[group] = load_message_bank(path)
     except (ValueError, OSError, json.JSONDecodeError) as exc:
         print(f"Invalid message bank: {exc}", file=sys.stderr)
         return 2
+    bank_parts = [f"other={args.messages}"] if args.messages else []
+    bank_parts.extend(
+        f"{COUNTRY_GROUP_LABELS[group]}={path}"
+        for group, path in iter_country_message_paths(args)
+        if path
+    )
+    if bank_parts:
+        print("Message banks: " + ", ".join(bank_parts))
     delay_random = random.SystemRandom()
     seen: set[str] = set()
     sent_count = 0
 
-    for row_number, row in enumerate(rows, start=2):
+    for row_number, row in selected:
         raw_phone = (row.get("phone") or "").strip()
         phone = normalize_phone(raw_phone, args.default_region) or ""
         prospect = Prospect(
@@ -1059,6 +1338,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             last_name=(row.get("last_name") or "").strip(),
             sign_up_comment=(row.get("sign_up_comment") or "").strip(),
             date_created=(row.get("date_created") or "").strip(),
+            country=country_from_row(row),
         )
         if prospect.opted_out:
             log_result(args.log, args.campaign, prospect, "skipped_opt_out")
@@ -1089,8 +1369,11 @@ def main(argv: Iterable[str] | None = None) -> int:
             log_result(args.log, args.campaign, prospect, "skipped_session_limit")
             continue
 
-        if message_bank:
-            template_id, message = message_bank.next(prospect, args.academy_name)
+        region = contact_region(row)
+        group = region if region in PRIMARY_REGIONS else "other"
+        bank = country_banks.get(group) or message_bank
+        if bank:
+            template_id, message = bank.next(prospect, args.academy_name)
         else:
             template_id, message = "default", generate_message(prospect, args.academy_name)
         planned_delay = (
@@ -1099,10 +1382,12 @@ def main(argv: Iterable[str] | None = None) -> int:
             else delay_random.randint(args.min_delay, args.max_delay)
         )
         date_label = (prospect.date_created or "").strip()
+        details = [f"{prospect.first_name} ({phone})"]
+        if prospect.country:
+            details.append(prospect.country)
         if date_label:
-            header = f"{prospect.first_name} ({phone}) — date created: {date_label}"
-        else:
-            header = f"{prospect.first_name} ({phone})"
+            details.append(f"date created: {date_label}")
+        header = " — ".join(details)
         print(f"\n{header} [template: {template_id}]\n{message}")
         if args.confirm_each and input("Process this message? [y/N]: ").strip().lower() != "y":
             log_result(

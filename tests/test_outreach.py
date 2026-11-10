@@ -50,6 +50,16 @@ class OutreachTests(unittest.TestCase):
         self.assertEqual(status, "country_mismatch")
         self.assertEqual(detected, "CO")
 
+    def test_message_bank_renders_country(self):
+        messages = [
+            {"id": f"message_{number}", "text": "Hola {first_name} de {country}"}
+            for number in range(10)
+        ]
+        bank = outreach.MessageBank(messages, opt_out_text="")
+        prospect = outreach.Prospect(2, "Ana", "+573001234567", "", True, False, country="Colombia")
+        _template_id, text = bank.next(prospect, "Academy")
+        self.assertEqual(text, "Hola Ana de Colombia")
+
     def test_message_bank_uses_every_message_before_repeating(self):
         messages = [
             {"id": f"message_{number}", "text": "Hello {first_name}"}
@@ -126,6 +136,136 @@ class OutreachTests(unittest.TestCase):
             with clean.open(newline="", encoding="utf-8") as handle:
                 rows = list(csv.DictReader(handle))
             self.assertEqual([row["first_name"] for row in rows], ["Old", "Mid", "New"])
+
+    def test_country_filter_separates_named_markets_from_other(self):
+        rows = [
+            {"first_name": "Ana", "phone": "+573001234567", "country": "Colombia"},
+            {"first_name": "Luis", "phone": "+525512345678", "country": "México"},
+            {"first_name": "Eva", "phone": "+56987654321", "country": "Chile"},
+            {"first_name": "Sofia", "phone": "+17844561111", "country": "Saint Vincent"},
+        ]
+        colombia = [row["first_name"] for row in rows if outreach.row_matches_country(row, {"CO"})]
+        other = [row["first_name"] for row in rows if outreach.row_matches_country(row, {"other"})]
+        both = [
+            row["first_name"]
+            for row in rows
+            if outreach.row_matches_country(row, {"CO", "MX"})
+        ]
+        self.assertEqual(colombia, ["Ana"])
+        self.assertEqual(other, ["Sofia"])
+        self.assertEqual(both, ["Ana", "Luis"])
+
+    def test_date_filter_includes_the_whole_day(self):
+        row = {"date created": "2026-09-20 18:30:00"}
+        start = outreach.parse_filter_bound("2026-09-20", end_of_day=False)
+        end = outreach.parse_filter_bound("2026-09-20", end_of_day=True)
+        self.assertTrue(outreach.row_matches_date(row, start, end))
+        next_day = outreach.parse_filter_bound("2026-09-21", end_of_day=False)
+        self.assertFalse(outreach.row_matches_date(row, next_day, None))
+        self.assertFalse(outreach.row_matches_date({"date created": ""}, start, end))
+
+    def test_costa_rica_country_flag(self):
+        args = outreach.parse_args([
+            "--campaign", "x",
+            "--academy-name", "Academy",
+            "--country", "costa_rica",
+        ])
+        self.assertEqual(args.country_groups, {"CR"})
+
+    def test_rejects_unknown_country_and_inverted_dates(self):
+        with self.assertRaises(SystemExit):
+            outreach.parse_args([
+                "--campaign", "x",
+                "--academy-name", "Academy",
+                "--country", "brazil",
+            ])
+        with self.assertRaises(SystemExit):
+            outreach.parse_args([
+                "--campaign", "x",
+                "--academy-name", "Academy",
+                "--date-from", "2026-10-01",
+                "--date-to", "2026-09-01",
+            ])
+
+    def test_send_run_filters_by_country_and_date(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_path = root / "prospects.csv"
+            log_path = root / "log.csv"
+            input_path.write_text(
+                "first_name,phone,country,opt_out,date created\n"
+                "Ana,+573001234567,Colombia,no,2026-09-20 08:00:00\n"
+                "Luis,+525512345678,Mexico,no,2026-09-20 09:00:00\n"
+                "Eva,+56987654321,Chile,no,2026-09-25 09:00:00\n"
+                "Sofia,+17844561111,Saint Vincent,no,2026-09-20 10:00:00\n",
+                encoding="utf-8",
+            )
+            common = [
+                "--input", str(input_path),
+                "--log", str(log_path),
+                "--review", str(root / "review.csv"),
+                "--do-not-contact", str(root / "dnc.csv"),
+                "--campaign", "filter-test",
+                "--academy-name", "Test Academy",
+            ]
+            with redirect_stdout(StringIO()) as output:
+                result = outreach.main(
+                    common + ["--country", "colombia,mexico", "--date", "2026-09-20"]
+                )
+            self.assertEqual(result, 0)
+            self.assertIn("Contact filter: country: Colombia, Mexico; date created: 2026-09-20", output.getvalue())
+            self.assertIn("Selected rows: 2 of 4", output.getvalue())
+            with log_path.open(newline="", encoding="utf-8") as handle:
+                logged = [row["first_name"] for row in csv.DictReader(handle)]
+            self.assertEqual(logged, ["Ana", "Luis"])
+
+    def test_country_message_bank_follows_the_contact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def write_bank(name: str, prefix: str) -> Path:
+                path = root / name
+                payload = {
+                    "messages": [
+                        {"id": f"{prefix}_{number}", "text": f"{prefix} {{first_name}}"}
+                        for number in range(10)
+                    ]
+                }
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                return path
+
+            fallback = write_bank("other.json", "OTHER")
+            mexico = write_bank("mx.json", "MEXICO")
+            input_path = root / "prospects.csv"
+            log_path = root / "log.csv"
+            input_path.write_text(
+                "first_name,phone,country,opt_out\n"
+                "Ana,+573001234567,Colombia,no\n"
+                "Luis,+525512345678,Mexico,no\n"
+                "Sofia,+17844561111,Saint Vincent,no\n",
+                encoding="utf-8",
+            )
+            result = outreach.main([
+                "--input", str(input_path),
+                "--log", str(log_path),
+                "--review", str(root / "review.csv"),
+                "--do-not-contact", str(root / "dnc.csv"),
+                "--campaign", "banks",
+                "--academy-name", "Academy",
+                "--messages", str(fallback),
+                "--messages-mexico", str(mexico),
+                "--max-messages", "5",
+            ])
+            self.assertEqual(result, 0)
+            with log_path.open(newline="", encoding="utf-8") as handle:
+                by_name = {row["first_name"]: row["message"] for row in csv.DictReader(handle)}
+            self.assertTrue(by_name["Ana"].startswith("OTHER Ana"))
+            self.assertTrue(by_name["Luis"].startswith("MEXICO Luis"))
+            self.assertTrue(by_name["Sofia"].startswith("OTHER Sofia"))
+
+    def test_gui_flag_rejects_extra_arguments(self):
+        with redirect_stdout(StringIO()):
+            self.assertEqual(outreach.main(["--gui", "--send"]), 2)
 
     def test_send_run_contacts_oldest_date_created_first(self):
         with tempfile.TemporaryDirectory() as directory:
