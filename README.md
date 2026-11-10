@@ -125,7 +125,7 @@ the number is currently assigned or registered with WhatsApp.
 Copy `messages.example.json` to `messages.json` and replace the example with at
 least ten objects. Messages are authored by the operator; the program does not
 invent academy claims. The supported placeholders are `{first_name}`,
-`{last_name}`, `{sign_up_comment}`, `{programme}`, and `{academy_name}`. The
+`{last_name}`, `{sign_up_comment}`, `{programme}`, `{country}`, and `{academy_name}`. The
 `programme` placeholder is available for older or enriched datasets; an initial
 contact template does not need to use it.
 
@@ -156,6 +156,45 @@ Review the terminal output and `outreach_log.csv`. Incomplete eligible records
 are also written to `review_queue.csv` instead of being sent.
 
 The preview prints and records the randomly selected delay for each contact.
+
+To contact one market, or everyone outside the four main markets, add `--country`.
+Names can be repeated or comma-separated: `colombia`, `mexico`, `costa_rica`,
+`chile`, or `other`. `other` means every country except Colombia, Mexico, Costa
+Rica, and Chile. Add `--date`, or `--date-from` and
+`--date-to`, to keep a single day or an inclusive date-created range. Rows
+outside the filter are left untouched and are not written to the log.
+
+```powershell
+python outreach.py --input cleaned_prospects.csv --messages messages.json --campaign "2027-colombia" --academy-name "Your Academy" --country colombia --date-from 2026-09-01 --date-to 2026-09-30
+```
+
+```powershell
+python outreach.py --input cleaned_prospects.csv --messages messages.json --campaign "2027-other" --academy-name "Your Academy" --country other --date 2026-09-20
+```
+
+`--messages` is the file for Other, and the fallback for a country that has no
+file of its own. Optional overrides are `--messages-colombia`,
+`--messages-mexico`, `--messages-costa-rica`, and `--messages-chile`. With no
+`--country` flag, one run still addresses each person with the file for their
+country. Colombia and Costa Rica are usually addressed with **usted**. Mexico,
+Chile, and Other usually use **tú**. Put that wording in the file. The program
+does not rewrite one form of address into the other.
+
+## Command maker
+
+Build the command in a window instead of typing the flags:
+
+```powershell
+python command_maker.py
+```
+
+On Windows you can also double-click `command_maker.pyw`. If `.venv` was created
+from a Python install without Tk, open the window with `py command_maker.py`
+instead of `python command_maker.py`. Choose strip, prepare, or outreach, tick the
+countries, point each country at a message file, and adjust the other flags.
+Copy prints a `python outreach.py ...` command for this folder. Run executes it
+with `.venv` when that environment exists. A real send still asks you to confirm, and then to type
+`SEND` in the input box unless you checked `--yes`.
 
 ## 4. Send a controlled test
 
@@ -214,6 +253,9 @@ Notification failures produce a warning but do not change the batch results.
 - Contacts people in **oldest `date created` first** order by default so the
   longest-waiting inquiries are reached first (not random). Message templates and
   delays between sends are still randomized.
+- Can limit a preview or send to `colombia`, `mexico`, `costa_rica`, `chile`, or
+  `other`, and to a date or inclusive date-created range.
+- Uses a country's own message file when one is set, and `--messages` otherwise.
 - Records skipped, dry-run, failed, and requested-send results.
 
 Use a new unique `--campaign` value for a genuinely different campaign. Reusing
@@ -234,12 +276,21 @@ attempts do not increase the reached count.
 --prepare                Validate phones; default output <stem>_prepared.csv
 --input PATH             Input CSV (default: prospects.csv)
 --cleaned-output PATH    Prepared eligible CSV (override --prepare default name)
---messages PATH          JSON bank containing at least 10 messages
+--messages PATH          JSON bank for Other, and the fallback for every country
+--messages-colombia PATH Message bank used for Colombia
+--messages-mexico PATH   Message bank used for Mexico
+--messages-costa-rica PATH Message bank used for Costa Rica
+--messages-chile PATH    Message bank used for Chile
+--gui                    Open the command maker window
 --log PATH               Audit CSV (default: outreach_log.csv)
 --review PATH            Human-review CSV (default: review_queue.csv)
 --do-not-contact PATH     Block-list CSV (default: do_not_contact.csv)
 --default-region CODE     Fallback region for the do-not-contact list (default: VC)
 --contact-order MODE      oldest-first (default) or file-order
+--country GROUP           colombia, mexico, costa_rica, chile, or other
+--date YYYY-MM-DD         Only this date created day
+--date-from YYYY-MM-DD    Only contacts created on or after this date
+--date-to YYYY-MM-DD      Only contacts created on or before this date
 --max-messages NUMBER     Maximum real send requests per run (default: 10)
 --min-delay SECONDS       Minimum random delay (default: 45)
 --max-delay SECONDS       Maximum random delay (default: 90)
